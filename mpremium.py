@@ -11,15 +11,19 @@ import requests
 
 # ===================== AYARLAR =====================
 RTMP_URL = "rtmp://ssh101.bozztv.com:1935/ssh101"
-STREAM_KEY = "maxpremier"
+STREAM_KEY = os.getenv("STREAM_KEY", "maxpremier")
 RTMP_SERVER = f"{RTMP_URL}/{STREAM_KEY}"
 
-# M3U ve Güncellenen Logo Bağlantıları
-M3U_URL = "https://raw.githubusercontent.com/ino8090/0101/refs/heads/main/mpremiuum.m3u"
-LOGO_URL = "https://raw.githubusercontent.com/ino8090/0101/refs/heads/main/1787671958979.png"
+# M3U ve Logo linkleri artık ortam değişkeninden (GitHub Actions secrets/env) okunuyor.
+# Değer verilmezse aşağıdaki varsayılanlar kullanılır.
+M3U_URL = os.getenv("M3U_URL", "https://raw.githubusercontent.com/ino8090/0101/refs/heads/main/mpremiuum.m3u")
+LOGO_URL = os.getenv("LOGO_URL", "https://raw.githubusercontent.com/ino8090/0101/refs/heads/main/1787671958979.png")
 
 GIST_ID = "34df90330e4b0daeed9a5b516c1c368d"
 GH_TOKEN = os.getenv("GH_TOKEN", "")
+
+# Her kanal kendi state dosyasını kullansın diye ayrı bir dosya adı.
+STATE_FILE_NAME = os.getenv("STATE_FILE_NAME", "state.json")
 
 STREAM_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
@@ -34,13 +38,15 @@ def get_gist_state():
         res = requests.get(url, headers=headers, timeout=10)
         if res.status_code == 200:
             files = res.json().get("files", {})
-            if "state.json" in files:
-                content = files["state.json"]["content"]
+            if STATE_FILE_NAME in files:
+                content = files[STATE_FILE_NAME]["content"]
                 data = json.loads(content)
                 idx = data.get("last_index", 0)
                 sec = data.get("last_seconds", 0)
-                print(f"✅ Gist başarıyla okundu -> İndeks: {idx}, Saniye: {sec}")
+                print(f"✅ Gist başarıyla okundu ({STATE_FILE_NAME}) -> İndeks: {idx}, Saniye: {sec}")
                 return idx, sec
+            else:
+                print(f"⚠️ Gist'te '{STATE_FILE_NAME}' dosyası bulunamadı, 0'dan başlanıyor.")
         else:
             print(f"❌ Gist okuma başarısız! HTTP Durum Kodu: {res.status_code}")
     except Exception as e:
@@ -60,14 +66,14 @@ def update_gist_state(index, seconds):
         }
         payload = {
             "files": {
-                "state.json": {
+                STATE_FILE_NAME: {
                     "content": json.dumps({"last_index": int(index), "last_seconds": int(seconds)})
                 }
             }
         }
         res = requests.patch(url, headers=headers, json=payload, timeout=5)
         if res.status_code == 200:
-            print(f"💾 Konum Gist'e Kaydedildi -> İndeks: {index}, Saniye: {int(seconds)}")
+            print(f"💾 Konum Gist'e Kaydedildi ({STATE_FILE_NAME}) -> İndeks: {index}, Saniye: {int(seconds)}")
         else:
             print(f"⚠️ Gist güncelleme hatası HTTP: {res.status_code}")
     except Exception as e:
@@ -102,8 +108,13 @@ def download_logo():
         print(f"⚠️ Logo indirme hatası: {e}")
 
 def start_m3u_stream():
+    print(f"🔧 Kullanılan M3U   : {M3U_URL}")
+    print(f"🔧 Kullanılan Logo  : {LOGO_URL}")
+    print(f"🔧 State dosyası    : {STATE_FILE_NAME}")
+    print(f"🔧 RTMP hedefi      : {RTMP_SERVER}")
+
     download_logo()
-    
+
     current_index, last_seconds = get_gist_state()
 
     while True:
@@ -111,13 +122,13 @@ def start_m3u_stream():
         if not playlist:
             time.sleep(10)
             continue
-            
+
         if current_index >= len(playlist):
             current_index = 0
             last_seconds = 0
 
         target_stream_url = playlist[current_index]
-        
+
         print("=" * 60)
         print("📺 SSH101 Canlı M3U Aktarım Yayını (1080p 60fps - 2000k) Başlatılıyor")
         print(f"📡 Kaynak Yayın     : {target_stream_url}")
@@ -172,7 +183,7 @@ def start_m3u_stream():
         ]
 
         print("▶ FFmpeg başlatıldı, 1080p 60fps @ 2000k yayın iletiliyor...")
-        
+
         process = subprocess.Popen(
             command,
             stderr=subprocess.PIPE,
@@ -186,14 +197,14 @@ def start_m3u_stream():
             line = process.stderr.readline()
             if not line and process.poll() is not None:
                 break
-            
+
             if "time=" in line:
                 time_match = re.search(r'time=(\d+):(\d+):(\d+\.\d+)', line)
                 if time_match:
                     hrs, mins, secs = time_match.groups()
                     played_seconds = int(hrs) * 3600 + int(mins) * 60 + float(secs)
                     current_stream_seconds = last_seconds + played_seconds
-                    
+
                     if time.time() - last_save_time > 15:
                         update_gist_state(current_index, current_stream_seconds)
                         last_save_time = time.time()
