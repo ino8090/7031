@@ -8,24 +8,28 @@ import re
 import json
 import requests
 
+
 # ============================================================
 # AYARLAR
 # ============================================================
 
 RTMP_URL = "rtmp://ssh101.bozztv.com:1935/ssh101"
 
-STREAM_KEY = os.getenv("STREAM_KEY", "maxnimasyon")
+STREAM_KEY = os.getenv("STREAM_KEY") or "maxnimasyon"
 RTMP_SERVER = f"{RTMP_URL}/{STREAM_KEY}"
 
-M3U_URL = os.getenv(
-    "M3U_URL",
+
+# M3U
+M3U_URL = os.getenv("M3U_URL") or (
     "https://raw.githubusercontent.com/ino8090/0101/refs/heads/main/Maxç.m3u"
 )
 
-LOGO_URL = os.getenv(
-    "LOGO_URL",
+
+# LOGO
+LOGO_URL = os.getenv("LOGO_URL") or (
     "https://raw.githubusercontent.com/ino8090/0101/refs/heads/main/1787712844266.png"
 )
+
 
 # ============================================================
 # GITHUB GIST
@@ -33,7 +37,6 @@ LOGO_URL = os.getenv(
 
 GIST_ID = "34df90330e4b0daeed9a5b516c1c368d"
 
-# GitHub Actions Secrets → GH_TOKEN
 GH_TOKEN = os.getenv("GH_TOKEN", "").strip()
 
 STATE_FILE_NAME = os.getenv(
@@ -41,7 +44,14 @@ STATE_FILE_NAME = os.getenv(
     "state_animasyon.json"
 )
 
-GITHUB_STEP_SUMMARY = os.getenv("GITHUB_STEP_SUMMARY")
+GITHUB_STEP_SUMMARY = os.getenv(
+    "GITHUB_STEP_SUMMARY"
+)
+
+
+# ============================================================
+# USER AGENT
+# ============================================================
 
 STREAM_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -55,10 +65,6 @@ STREAM_USER_AGENT = (
 # ============================================================
 
 def github_headers():
-    """
-    GitHub API için ortak header'lar.
-    Token kesinlikle loga yazdırılmaz.
-    """
 
     if not GH_TOKEN:
         return {}
@@ -71,13 +77,10 @@ def github_headers():
 
 
 # ============================================================
-# SÜRE FORMATLAMA
+# SÜRE
 # ============================================================
 
 def format_hms(total_seconds):
-    """
-    Saniyeyi HH:MM:SS formatına çevirir.
-    """
 
     total_seconds = int(total_seconds)
 
@@ -93,9 +96,6 @@ def format_hms(total_seconds):
 # ============================================================
 
 def get_gist_state():
-    """
-    Gist'ten en son kalınan video indeksini ve saniyeyi okur.
-    """
 
     if not GIST_ID:
         print("⚠️ GIST_ID tanımlı değil!")
@@ -103,18 +103,15 @@ def get_gist_state():
 
     if not GH_TOKEN:
         print("❌ GH_TOKEN bulunamadı!")
-        print("❌ GitHub Actions Secrets bölümünde GH_TOKEN kontrol edilmeli.")
         return 0, 0
 
     try:
 
         url = f"https://api.github.com/gists/{GIST_ID}"
 
-        headers = github_headers()
-
         response = requests.get(
             url,
-            headers=headers,
+            headers=github_headers(),
             timeout=15
         )
 
@@ -122,79 +119,72 @@ def get_gist_state():
 
             files = response.json().get("files", {})
 
-            if STATE_FILE_NAME in files:
-
-                content = files[STATE_FILE_NAME].get("content", "")
-
-                try:
-                    data = json.loads(content)
-
-                    index = int(data.get("last_index", 0))
-                    seconds = int(data.get("last_seconds", 0))
-
-                    print(
-                        f"✅ Gist başarıyla okundu "
-                        f"({STATE_FILE_NAME}) -> "
-                        f"İndeks: {index}, "
-                        f"Saniye: {seconds}"
-                    )
-
-                    return index, seconds
-
-                except json.JSONDecodeError:
-
-                    print(
-                        f"⚠️ {STATE_FILE_NAME} geçerli JSON değil."
-                    )
-
-                    return 0, 0
-
-            else:
+            if STATE_FILE_NAME not in files:
 
                 print(
-                    f"⚠️ Gist'te '{STATE_FILE_NAME}' "
-                    f"dosyası bulunamadı."
+                    f"⚠️ Gist'te "
+                    f"'{STATE_FILE_NAME}' bulunamadı."
                 )
 
-                print("ℹ️ Yayın 0'dan başlayacak.")
+                print(
+                    "ℹ️ Yayın 0'dan başlayacak."
+                )
 
                 return 0, 0
 
-        else:
-
-            print(
-                f"❌ Gist okuma başarısız! "
-                f"HTTP: {response.status_code}"
-            )
+            content = files[
+                STATE_FILE_NAME
+            ].get("content", "")
 
             try:
 
-                error_data = response.json()
+                data = json.loads(content)
+
+            except json.JSONDecodeError:
 
                 print(
-                    "🔎 GitHub API cevabı:"
+                    "⚠️ Gist state dosyası geçersiz JSON."
                 )
 
-                print(
-                    json.dumps(
-                        error_data,
-                        ensure_ascii=False,
-                        indent=2
-                    )
-                )
+                return 0, 0
 
-            except Exception:
+            index = int(
+                data.get("last_index", 0)
+            )
 
-                print(
-                    f"🔎 GitHub cevabı: "
-                    f"{response.text[:1000]}"
-                )
+            seconds = int(
+                data.get("last_seconds", 0)
+            )
 
-    except requests.RequestException as error:
+            print(
+                f"✅ Gist başarıyla okundu "
+                f"({STATE_FILE_NAME}) -> "
+                f"İndeks: {index}, "
+                f"Saniye: {seconds}"
+            )
+
+            return index, seconds
 
         print(
-            f"⚠️ Gist bağlantı hatası: {error}"
+            f"❌ Gist okuma başarısız! "
+            f"HTTP: {response.status_code}"
         )
+
+        try:
+
+            print(
+                json.dumps(
+                    response.json(),
+                    ensure_ascii=False,
+                    indent=2
+                )
+            )
+
+        except Exception:
+
+            print(
+                response.text[:1000]
+            )
 
     except Exception as error:
 
@@ -210,24 +200,26 @@ def get_gist_state():
 # ============================================================
 
 def update_gist_state(index, seconds):
-    """
-    Gist üzerine güncel konumu kaydeder.
-    """
 
     if not GIST_ID:
-        print("⚠️ GIST_ID tanımlı değil!")
+
+        print(
+            "⚠️ GIST_ID tanımlı değil!"
+        )
+
         return False
 
     if not GH_TOKEN:
-        print("❌ GH_TOKEN boş!")
-        print("❌ Gist güncellenemiyor.")
+
+        print(
+            "❌ GH_TOKEN bulunamadı!"
+        )
+
         return False
 
     try:
 
         url = f"https://api.github.com/gists/{GIST_ID}"
-
-        headers = github_headers()
 
         payload = {
             "files": {
@@ -245,7 +237,7 @@ def update_gist_state(index, seconds):
 
         response = requests.patch(
             url,
-            headers=headers,
+            headers=github_headers(),
             json=payload,
             timeout=15
         )
@@ -261,63 +253,48 @@ def update_gist_state(index, seconds):
 
             return True
 
-        else:
+        print(
+            f"⚠️ Gist güncelleme hatası "
+            f"HTTP: {response.status_code}"
+        )
+
+        try:
+
+            error_data = response.json()
 
             print(
-                f"⚠️ Gist güncelleme hatası "
-                f"HTTP: {response.status_code}"
+                "🔎 GitHub API mesajı:"
             )
 
-            # GitHub'ın gerçek hata mesajını göster
-            try:
-
-                error_data = response.json()
-
-                print(
-                    "🔎 GitHub API mesajı:"
+            print(
+                json.dumps(
+                    error_data,
+                    ensure_ascii=False,
+                    indent=2
                 )
+            )
 
-                print(
-                    json.dumps(
-                        error_data,
-                        ensure_ascii=False,
-                        indent=2
-                    )
-                )
+        except Exception:
 
-            except Exception:
+            print(
+                f"🔎 GitHub cevabı: "
+                f"{response.text[:1000]}"
+            )
 
-                print(
-                    f"🔎 GitHub cevabı: "
-                    f"{response.text[:1000]}"
-                )
+        if response.status_code == 401:
 
-            if response.status_code == 401:
+            print(
+                "❌ 401: Token geçersiz."
+            )
 
-                print(
-                    "❌ 401: GH_TOKEN geçersiz, "
-                    "süresi dolmuş veya yanlış secret kullanılıyor."
-                )
+        elif response.status_code == 403:
 
-            elif response.status_code == 403:
+            print(
+                "❌ 403: Token'ın Gist yazma "
+                "yetkisi yok olabilir."
+            )
 
-                print(
-                    "❌ 403: Token Gist üzerinde "
-                    "yazma yetkisine sahip olmayabilir."
-                )
-
-                print(
-                    "ℹ️ Fine-grained token kullanıyorsan "
-                    "Gists → Write yetkisini kontrol et."
-                )
-
-            return False
-
-    except requests.RequestException as error:
-
-        print(
-            f"⚠️ Gist bağlantı hatası: {error}"
-        )
+        return False
 
     except Exception as error:
 
@@ -325,7 +302,7 @@ def update_gist_state(index, seconds):
             f"⚠️ Gist güncelleme hatası: {error}"
         )
 
-    return False
+        return False
 
 
 # ============================================================
@@ -333,9 +310,14 @@ def update_gist_state(index, seconds):
 # ============================================================
 
 def get_m3u_playlist(m3u_url):
-    """
-    M3U listesindeki yayın linklerini ve film adlarını alır.
-    """
+
+    if not m3u_url:
+
+        print(
+            "❌ M3U URL boş!"
+        )
+
+        return []
 
     try:
 
@@ -379,11 +361,8 @@ def get_m3u_playlist(m3u_url):
                 )
 
                 if match:
-
                     pending_title = match.group(1).strip()
-
                 else:
-
                     pending_title = None
 
             elif (
@@ -429,6 +408,14 @@ def get_m3u_playlist(m3u_url):
 
 def download_logo():
 
+    if not LOGO_URL:
+
+        print(
+            "⚠️ Logo URL boş."
+        )
+
+        return False
+
     try:
 
         headers = {
@@ -438,12 +425,12 @@ def download_logo():
         response = requests.get(
             LOGO_URL,
             headers=headers,
-            timeout=15
+            timeout=20
         )
 
         if (
             response.status_code == 200
-            and len(response.content) > 0
+            and response.content
         ):
 
             with open(
@@ -451,7 +438,9 @@ def download_logo():
                 "wb"
             ) as file:
 
-                file.write(response.content)
+                file.write(
+                    response.content
+                )
 
             print(
                 "✅ Logo başarıyla indirildi."
@@ -562,14 +551,14 @@ def write_step_summary(
 
 
 # ============================================================
-# YAYIN
+# ANA YAYIN
 # ============================================================
 
 def start_m3u_stream():
 
     print("=" * 60)
-
     print("📺 MAX ANİMASYON YAYINI")
+    print("=" * 60)
 
     print(
         f"🔧 M3U       : {M3U_URL}"
@@ -591,50 +580,78 @@ def start_m3u_stream():
         f"🔧 RTMP      : {RTMP_SERVER}"
     )
 
-    if GH_TOKEN:
-
-        print(
-            "🔐 GH_TOKEN  : ✅ Mevcut"
+    print(
+        "🔐 GH_TOKEN  : "
+        + (
+            "✅ Mevcut"
+            if GH_TOKEN
+            else "❌ YOK"
         )
-
-    else:
-
-        print(
-            "🔐 GH_TOKEN  : ❌ YOK"
-        )
+    )
 
     print("=" * 60)
 
+
+    # ========================================================
+    # LOGO
+    # ========================================================
+
     download_logo()
 
-    current_index, last_seconds = get_gist_state()
 
-    print(
-        f"▶ Başlangıç indeksi: {current_index}"
+    # ========================================================
+    # GIST'TEN SON KONUM
+    # ========================================================
+
+    current_index, last_seconds = (
+        get_gist_state()
     )
 
     print(
-        f"▶ Başlangıç saniyesi: {last_seconds}"
+        f"▶ Başlangıç indeksi: "
+        f"{current_index}"
     )
+
+    print(
+        f"▶ Başlangıç saniyesi: "
+        f"{last_seconds}"
+    )
+
+
+    # ========================================================
+    # ANA DÖNGÜ
+    # ========================================================
 
     while True:
 
-        playlist = get_m3u_playlist(M3U_URL)
+        playlist = get_m3u_playlist(
+            M3U_URL
+        )
 
         if not playlist:
 
             print(
-                "⚠️ Playlist boş. "
-                "10 saniye sonra tekrar denenecek."
+                "⚠️ Playlist boş."
+            )
+
+            print(
+                "⚠️ 10 saniye sonra "
+                "tekrar denenecek."
             )
 
             time.sleep(10)
 
             continue
 
+
+        # ====================================================
+        # INDEX KONTROL
+        # ====================================================
+
         if current_index >= len(playlist):
 
             current_index = 0
+
             last_seconds = 0
 
             update_gist_state(
@@ -642,39 +659,54 @@ def start_m3u_stream():
                 last_seconds
             )
 
-        current_item = playlist[current_index]
 
-        target_stream_url = current_item["url"]
+        # ====================================================
+        # MEVCUT FİLM
+        # ====================================================
 
-        film_title = current_item["title"]
+        current_item = playlist[
+            current_index
+        ]
+
+        target_stream_url = (
+            current_item["url"]
+        )
+
+        film_title = (
+            current_item["title"]
+        )
+
 
         print("=" * 60)
 
         print(
-            "📺 SSH101 Canlı M3U Aktarım Yayını"
-        )
-
-        print(
-            "🎬 Oynatılan Film : "
+            f"🎬 Oynatılan Film : "
             f"{film_title}"
         )
 
         print(
-            "📡 Kaynak Yayın    : "
+            f"🔢 Sıra           : "
+            f"{current_index + 1}/"
+            f"{len(playlist)}"
+        )
+
+        print(
+            f"📡 Kaynak         : "
             f"{target_stream_url}"
         )
 
         print(
-            "⏱️ Başlangıç       : "
-            f"{last_seconds}"
+            f"⏱️ Başlangıç      : "
+            f"{last_seconds} saniye"
         )
 
         print(
-            "🚀 Hedef RTMP      : "
+            f"🚀 RTMP           : "
             f"{RTMP_SERVER}"
         )
 
         print("=" * 60)
+
 
         print_dashboard(
             film_title,
@@ -684,6 +716,7 @@ def start_m3u_stream():
             status="🟡 Başlatılıyor"
         )
 
+
         write_step_summary(
             film_title,
             current_index,
@@ -692,14 +725,20 @@ def start_m3u_stream():
             status="🟡 Başlatılıyor"
         )
 
+
         # ====================================================
-        # LOGO / FFMPEG FILTER
+        # LOGO
         # ====================================================
 
         has_logo = (
             os.path.exists("logo.png")
             and os.path.getsize("logo.png") > 0
         )
+
+
+        # ====================================================
+        # FFMPEG FILTER
+        # ====================================================
 
         if has_logo:
 
@@ -733,16 +772,23 @@ def start_m3u_stream():
 
             logo_input = []
 
+
+        # ====================================================
+        # HTTP HEADER
+        # ====================================================
+
         headers_arg = (
             f"User-Agent: "
             f"{STREAM_USER_AGENT}\r\n"
         )
 
+
         # ====================================================
-        # FFMPEG
+        # FFMPEG COMMAND
         # ====================================================
 
         command = [
+
             "ffmpeg",
 
             "-headers",
@@ -806,9 +852,11 @@ def start_m3u_stream():
             RTMP_SERVER
         ]
 
+
         print(
-            "▶ FFmpeg başlatılıyor..."
+            "▶ FFmpeg başlatıldı..."
         )
+
 
         process = subprocess.Popen(
             command,
@@ -817,19 +865,25 @@ def start_m3u_stream():
             bufsize=1
         )
 
+
         last_save_time = time.time()
 
         last_dashboard_time = time.time()
 
-        current_stream_seconds = last_seconds
+        current_stream_seconds = (
+            last_seconds
+        )
+
 
         # ====================================================
-        # FFMPEG LOG OKUMA
+        # FFMPEG TAKİP
         # ====================================================
 
         while True:
 
-            line = process.stderr.readline()
+            line = (
+                process.stderr.readline()
+            )
 
             if (
                 not line
@@ -837,37 +891,53 @@ def start_m3u_stream():
             ):
                 break
 
+
             if "time=" not in line:
                 continue
+
 
             time_match = re.search(
                 r"time=(\d+):(\d+):(\d+(?:\.\d+)?)",
                 line
             )
 
+
             if not time_match:
                 continue
 
-            hrs, mins, secs = time_match.groups()
+
+            hrs, mins, secs = (
+                time_match.groups()
+            )
+
 
             played_seconds = (
+
                 int(hrs) * 3600
+
                 + int(mins) * 60
+
                 + float(secs)
             )
+
 
             current_stream_seconds = (
                 last_seconds
                 + played_seconds
             )
 
+
             now = time.time()
 
+
             # =================================================
-            # HER 15 SANİYEDE GIST
+            # HER 15 SANİYE GIST
             # =================================================
 
-            if now - last_save_time >= 15:
+            if (
+                now - last_save_time
+                >= 15
+            ):
 
                 update_gist_state(
                     current_index,
@@ -876,11 +946,15 @@ def start_m3u_stream():
 
                 last_save_time = now
 
+
             # =================================================
             # HER 30 SANİYE DASHBOARD
             # =================================================
 
-            if now - last_dashboard_time >= 30:
+            if (
+                now - last_dashboard_time
+                >= 30
+            ):
 
                 print_dashboard(
                     film_title,
@@ -898,16 +972,25 @@ def start_m3u_stream():
 
                 last_dashboard_time = now
 
+
         # ====================================================
-        # FFMPEG BİTTİ
+        # FFMPEG SONUCU
         # ====================================================
 
-        return_code = process.returncode
+        return_code = (
+            process.returncode
+        )
+
 
         print(
             f"⚠️ FFmpeg kapandı. "
             f"Return code: {return_code}"
         )
+
+
+        # ====================================================
+        # FİLM TAMAMLANDI
+        # ====================================================
 
         if return_code == 0:
 
@@ -919,51 +1002,69 @@ def start_m3u_stream():
 
             last_seconds = 0
 
-            write_step_summary(
-                film_title,
-                current_index,
-                len(playlist),
-                0,
-                status="✅ Bitti, sıradaki filme geçiliyor"
-            )
 
             update_gist_state(
                 current_index,
                 0
             )
 
-        else:
-
-            print(
-                "🔴 Yayın/FFmpeg bağlantısı koptu."
-            )
-
-            last_seconds = int(
-                current_stream_seconds
-            )
 
             write_step_summary(
                 film_title,
                 current_index,
                 len(playlist),
-                last_seconds,
-                status="🔴 Bağlantı koptu, tekrar denenecek"
+                0,
+                status=(
+                    "✅ Bitti, "
+                    "sıradaki filme geçiliyor"
+                )
             )
+
+
+        # ====================================================
+        # YAYIN KOPTU
+        # ====================================================
+
+        else:
+
+            print(
+                "🔴 FFmpeg/yayın bağlantısı koptu."
+            )
+
+
+            last_seconds = int(
+                current_stream_seconds
+            )
+
 
             update_gist_state(
                 current_index,
                 last_seconds
             )
 
+
+            write_step_summary(
+                film_title,
+                current_index,
+                len(playlist),
+                last_seconds,
+                status=(
+                    "🔴 Bağlantı koptu, "
+                    "tekrar denenecek"
+                )
+            )
+
+
         print(
-            "⚠️ 5 saniye sonra tekrar bağlanılıyor..."
+            "⚠️ 5 saniye sonra "
+            "tekrar bağlanılıyor..."
         )
 
         time.sleep(5)
 
 
 # ============================================================
-# PROGRAM BAŞLANGICI
+# BAŞLAT
 # ============================================================
 
 if __name__ == "__main__":
@@ -975,7 +1076,7 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
 
         print(
-            "\n🛑 Yayın kullanıcı tarafından durduruldu."
+            "\n🛑 Yayın durduruldu."
         )
 
     except Exception as error:
