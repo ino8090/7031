@@ -31,13 +31,12 @@ jobs:
 
       - name: 🐍 Python kurulumu
         uses: actions/setup-python@v5
-
         with:
           python-version: "3.10"
 
 
       # =====================================================
-      # FFMPEG + REQUESTS
+      # FFMPEG
       # =====================================================
 
       - name: 📦 FFmpeg ve Kurulumlar
@@ -58,7 +57,7 @@ jobs:
 
 
       # =====================================================
-      # GITHUB GIST TOKEN TESTİ
+      # GIST TEST
       # =====================================================
 
       - name: 🔐 Gist bağlantı testi
@@ -78,7 +77,7 @@ jobs:
             echo "GitHub Repository → Settings →"
             echo "Secrets and variables → Actions"
             echo ""
-            echo "Burada GH_TOKEN isimli secret bulunmalı."
+            echo "GH_TOKEN isimli secret oluşturulmalı."
 
             exit 1
 
@@ -111,9 +110,9 @@ jobs:
           elif [ "$HTTP_CODE" = "401" ]; then
 
             echo "❌ HTTP 401"
+            echo "❌ Token geçersiz veya yanlış."
             echo ""
-            echo "Token geçersiz veya yanlış token kullanılıyor."
-            echo ""
+
             cat /tmp/gist_response.json
 
             exit 1
@@ -121,9 +120,9 @@ jobs:
           elif [ "$HTTP_CODE" = "403" ]; then
 
             echo "❌ HTTP 403"
+            echo "❌ Gist erişim yetkisi reddedildi."
             echo ""
-            echo "Token'ın Gist erişim yetkisi reddedildi."
-            echo ""
+
             cat /tmp/gist_response.json
 
             exit 1
@@ -131,18 +130,18 @@ jobs:
           elif [ "$HTTP_CODE" = "404" ]; then
 
             echo "❌ HTTP 404"
+            echo "❌ Gist bulunamadı."
             echo ""
-            echo "Gist bulunamadı."
-            echo "GIST_ID kontrol edilmeli."
-            echo ""
+
             cat /tmp/gist_response.json
 
             exit 1
 
           else
 
-            echo "❌ Beklenmeyen HTTP kodu: $HTTP_CODE"
+            echo "❌ Beklenmeyen HTTP: $HTTP_CODE"
             echo ""
+
             cat /tmp/gist_response.json
 
             exit 1
@@ -151,22 +150,20 @@ jobs:
 
 
       # =====================================================
-      # YAYINI BAŞLAT
+      # YAYIN
       # =====================================================
 
       - name: 🚀 Yayını başlat
         env:
 
-          # GitHub Personal Access Token
+          # GitHub Gist token
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
 
           # Gist state dosyası
           STATE_FILE_NAME: "state_animasyon.json"
 
-          # İstersen bunları da Secret olarak kullanabilirsin
+          # RTMP yayın anahtarı
           STREAM_KEY: ${{ secrets.STREAM_KEY }}
-          M3U_URL: ${{ secrets.M3U_URL }}
-          LOGO_URL: ${{ secrets.LOGO_URL }}
 
         run: |
 
@@ -174,20 +171,26 @@ jobs:
           echo "📺 MAX ANİMASYON YAYINI BAŞLIYOR"
           echo "=========================================="
 
-          echo "🐍 Python sürümü:"
+          echo ""
+          echo "🐍 Python:"
           python --version
 
           echo ""
-          echo "🎬 FFmpeg sürümü:"
+          echo "🎬 FFmpeg:"
           ffmpeg -version | head -n 1
 
           echo ""
-          echo "🔐 Gist token:"
+
           if [ -n "$GH_TOKEN" ]; then
-            echo "✅ GH_TOKEN mevcut"
+
+            echo "🔐 GH_TOKEN: ✅ Mevcut"
+
           else
-            echo "❌ GH_TOKEN yok"
+
+            echo "🔐 GH_TOKEN: ❌ Yok"
+
             exit 1
+
           fi
 
           echo ""
