@@ -26,7 +26,7 @@ jobs:
       env:
         GH_TOKEN: ${{ secrets.GH_TOKEN }}
         STATE_FILE_NAME: "state_animasyon.json"
-      run: python -u maxyerli.py
+      run: python -u yerli2.py
 
     - name: 🔁 Süre doldu, yeni run'ı tetikle
       if: always()
