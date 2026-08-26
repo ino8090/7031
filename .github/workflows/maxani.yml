@@ -1,29 +1,197 @@
 name: max animasyon
+
 on:
   push:
-    branches: [ main ]
+    branches:
+      - main
+
   workflow_dispatch:
+
 jobs:
+
   yayin:
+
     runs-on: ubuntu-latest
+
     timeout-minutes: 360
+
     steps:
-    - name: 📥 Depoyu klonla
-      uses: actions/checkout@v4
-      
-    - name: 🐍 Python kurulumu
-      uses: actions/setup-python@v5
-      with:
-        python-version: '3.10'
-        
-    - name: 📦 FFmpeg ve Kurulumlar
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y --no-install-recommends ffmpeg ca-certificates openssl
-        pip install requests
-        
-    - name: 🚀 Yayını başlat
-      env:
-        GH_TOKEN: ${{ secrets.GH_TOKEN }}
-        STATE_FILE_NAME: "state_animasyon.json"
-      run: python -u maxani.py
+
+      # =====================================================
+      # REPOSITORY
+      # =====================================================
+
+      - name: 📥 Depoyu klonla
+        uses: actions/checkout@v4
+
+
+      # =====================================================
+      # PYTHON
+      # =====================================================
+
+      - name: 🐍 Python kurulumu
+        uses: actions/setup-python@v5
+
+        with:
+          python-version: "3.10"
+
+
+      # =====================================================
+      # FFMPEG + REQUESTS
+      # =====================================================
+
+      - name: 📦 FFmpeg ve Kurulumlar
+        run: |
+
+          sudo apt-get update
+
+          sudo apt-get install -y \
+            --no-install-recommends \
+            ffmpeg \
+            ca-certificates \
+            openssl \
+            curl
+
+          python -m pip install --upgrade pip
+
+          pip install requests
+
+
+      # =====================================================
+      # GITHUB GIST TOKEN TESTİ
+      # =====================================================
+
+      - name: 🔐 Gist bağlantı testi
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+
+        run: |
+
+          echo "=========================================="
+          echo "🔐 GITHUB GIST TOKEN TESTİ"
+          echo "=========================================="
+
+          if [ -z "$GH_TOKEN" ]; then
+
+            echo "❌ GH_TOKEN BOŞ!"
+            echo ""
+            echo "GitHub Repository → Settings →"
+            echo "Secrets and variables → Actions"
+            echo ""
+            echo "Burada GH_TOKEN isimli secret bulunmalı."
+
+            exit 1
+
+          fi
+
+          echo "✅ GH_TOKEN Actions'a aktarılmış."
+          echo "🔢 Token uzunluğu: ${#GH_TOKEN}"
+
+          echo ""
+          echo "🔎 Gist kontrol ediliyor..."
+
+          HTTP_CODE=$(curl -s \
+            -o /tmp/gist_response.json \
+            -w "%{http_code}" \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "User-Agent: MaxAnimasyon-Gist-Bot" \
+            "https://api.github.com/gists/34df90330e4b0daeed9a5b516c1c368d")
+
+          echo ""
+          echo "📡 Gist API HTTP sonucu: $HTTP_CODE"
+          echo ""
+
+          if [ "$HTTP_CODE" = "200" ]; then
+
+            echo "✅ Gist okunabiliyor."
+            echo "✅ Token geçerli."
+            echo "✅ Gist erişimi mevcut."
+
+          elif [ "$HTTP_CODE" = "401" ]; then
+
+            echo "❌ HTTP 401"
+            echo ""
+            echo "Token geçersiz veya yanlış token kullanılıyor."
+            echo ""
+            cat /tmp/gist_response.json
+
+            exit 1
+
+          elif [ "$HTTP_CODE" = "403" ]; then
+
+            echo "❌ HTTP 403"
+            echo ""
+            echo "Token'ın Gist erişim yetkisi reddedildi."
+            echo ""
+            cat /tmp/gist_response.json
+
+            exit 1
+
+          elif [ "$HTTP_CODE" = "404" ]; then
+
+            echo "❌ HTTP 404"
+            echo ""
+            echo "Gist bulunamadı."
+            echo "GIST_ID kontrol edilmeli."
+            echo ""
+            cat /tmp/gist_response.json
+
+            exit 1
+
+          else
+
+            echo "❌ Beklenmeyen HTTP kodu: $HTTP_CODE"
+            echo ""
+            cat /tmp/gist_response.json
+
+            exit 1
+
+          fi
+
+
+      # =====================================================
+      # YAYINI BAŞLAT
+      # =====================================================
+
+      - name: 🚀 Yayını başlat
+        env:
+
+          # GitHub Personal Access Token
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+
+          # Gist state dosyası
+          STATE_FILE_NAME: "state_animasyon.json"
+
+          # İstersen bunları da Secret olarak kullanabilirsin
+          STREAM_KEY: ${{ secrets.STREAM_KEY }}
+          M3U_URL: ${{ secrets.M3U_URL }}
+          LOGO_URL: ${{ secrets.LOGO_URL }}
+
+        run: |
+
+          echo "=========================================="
+          echo "📺 MAX ANİMASYON YAYINI BAŞLIYOR"
+          echo "=========================================="
+
+          echo "🐍 Python sürümü:"
+          python --version
+
+          echo ""
+          echo "🎬 FFmpeg sürümü:"
+          ffmpeg -version | head -n 1
+
+          echo ""
+          echo "🔐 Gist token:"
+          if [ -n "$GH_TOKEN" ]; then
+            echo "✅ GH_TOKEN mevcut"
+          else
+            echo "❌ GH_TOKEN yok"
+            exit 1
+          fi
+
+          echo ""
+          echo "🚀 maxani.py çalıştırılıyor..."
+          echo ""
+
+          python -u maxani.py
