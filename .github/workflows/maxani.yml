@@ -1,15 +1,12 @@
 name: max animasyon
-
 on:
   push:
     branches: [ main ]
   workflow_dispatch:
-
 jobs:
   yayin:
     runs-on: ubuntu-latest
     timeout-minutes: 360
-
     steps:
     - name: 📥 Depoyu klonla
       uses: actions/checkout@v4
@@ -28,4 +25,5 @@ jobs:
     - name: 🚀 Yayını başlat
       env:
         GH_TOKEN: ${{ secrets.GH_TOKEN }}
-      run: python maxani.py
+        STATE_FILE_NAME: "state_animasyon.json"
+      run: python -u maxani.py
