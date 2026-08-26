@@ -59,6 +59,7 @@ def get_gist_state():
                 print(f"⚠️ Gist'te '{STATE_FILE_NAME}' dosyası bulunamadı, 0'dan başlanıyor.")
         else:
             print(f"❌ Gist okuma başarısız! HTTP Durum Kodu: {res.status_code}")
+            print(f"❌ Detay: {res.text}")
     except Exception as e:
         print(f"⚠️ Gist okuma hatası: {e}")
     return 0, 0
@@ -87,6 +88,10 @@ def update_gist_state(index, seconds):
             print(f"💾 Konum Gist'e Kaydedildi ({STATE_FILE_NAME}) -> İndeks: {index}, Saniye: {int(seconds)}")
         else:
             print(f"⚠️ Gist güncelleme hatası HTTP: {res.status_code}")
+            print(f"⚠️ Detay: {res.text}")
+            print(f"⚠️ Kullanılan GIST_ID: {GIST_ID}")
+            print(f"⚠️ Token uzunluğu: {len(GH_TOKEN)} karakter")
+            print(f"⚠️ Token son 4 karakter: {GH_TOKEN[-4:] if len(GH_TOKEN) >= 4 else 'YOK'}")
     except Exception as e:
         print(f"⚠️ Gist güncelleme hatası: {e}")
 
