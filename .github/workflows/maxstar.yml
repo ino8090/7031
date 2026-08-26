@@ -1,0 +1,40 @@
+name: max star
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+jobs:
+  yayin:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+    - name: 📥 Depoyu klonla
+      uses: actions/checkout@v4
+      
+    - name: 🐍 Python kurulumu
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+        
+    - name: 📦 FFmpeg ve Kurulumlar
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends ffmpeg ca-certificates openssl
+        pip install requests
+        
+    - name: 🚀 Yayını başlat
+      env:
+        GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        STATE_FILE_NAME: "state_animasyon.json"
+      run: python -u maxstar.py
+
+    - name: 🔁 Süre doldu, yeni run'ı tetikle
+      if: always()
+      env:
+        GH_TOKEN: ${{ secrets.GH_TOKEN }}
+      run: |
+        curl -X POST \
+          -H "Authorization: token $GH_TOKEN" \
+          -H "Accept: application/vnd.github+json" \
+          "https://api.github.com/repos/${{ github.repository }}/actions/workflows/max_animasyon.yml/dispatches" \
+          -d '{"ref":"${{ github.ref_name }}"}'
