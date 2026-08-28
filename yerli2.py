@@ -40,7 +40,7 @@ def get_local_state():
                 data = json.load(f)
                 idx = data.get("last_index", 0)
                 sec = data.get("last_seconds", 0)
-                print(f"✅ Yerel state okundu ({STATE_FILE_NAME}) -> İndeks: {idx}, Saniye: {sec}")
+                print(f"✅ Yerel state okundu ({STATE_FILE_NAME}) => İndeks: {idx}, Saniye: {sec}")
                 return idx, sec
         except Exception as e:
             print(f"⚠️ Yerel state okuma hatası: {e}")
@@ -55,7 +55,7 @@ def update_local_state(index, seconds):
         data = {"last_index": int(index), "last_seconds": int(seconds)}
         with open(STATE_FILE_NAME, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
-        print(f"💾 Konum yerel dosyaya kaydedildi -> İndeks: {index}, Saniye: {int(seconds)}")
+        print(f"💾 Konum yerel dosyaya kaydedildi => İndeks: {index}, Saniye: {int(seconds)}")
     except Exception as e:
         print(f"⚠️ Yerel state yazma hatası: {e}")
 
@@ -174,7 +174,7 @@ def start_m3u_stream():
         else:
             filter_str = (
                 '[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,'
-                'pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,fps=30[v]'
+                'pad=1920:1080:(oh-ih)/2:black,fps=30[v]'
             )
             logo_input = []
 
@@ -183,6 +183,9 @@ def start_m3u_stream():
         command = [
             'ffmpeg',
             '-headers', headers_arg,
+            '-reconnect', '1',
+            '-reconnect_streamed', '1',
+            '-reconnect_delay_max', '5',
             '-ss', str(last_seconds),
             '-re',
             '-i', target_stream_url
@@ -242,17 +245,20 @@ def start_m3u_stream():
                         write_step_summary(film_title, current_index, len(playlist), current_stream_seconds)
                         last_dashboard_time = now
 
+        # FFmpeg çıkış yaptıktan sonra kontrol
         if process.returncode == 0:
+            print("✅ Film normal şekilde bitti, sıradaki filme geçiliyor.")
             write_step_summary(film_title, current_index, len(playlist), current_stream_seconds, status="✅ Bitti, sıradaki filme geçiliyor")
             current_index += 1
             last_seconds = 0
             update_local_state(current_index, 0)
         else:
+            print(f"⚠️ Yayın koptu (Return Code: {process.returncode}). Sıradaki filme geçilmiyor, aynı saniyeden tekrar denenecek.")
             write_step_summary(film_title, current_index, len(playlist), current_stream_seconds, status="🔴 Bağlantı koptu, tekrar denenecek")
             last_seconds = current_stream_seconds
             update_local_state(current_index, last_seconds)
 
-        print("⚠️ Yayın durdu! 5 saniye sonra tekrar bağlanılıyor...")
+        print("⚠️ 5 saniye sonra tekrar bağlanılıyor...")
         time.sleep(5)
 
 
