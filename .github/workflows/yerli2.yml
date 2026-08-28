@@ -48,7 +48,7 @@ jobs:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
     - name: 🔁 Süre doldu, yeni run'ı tetikle
-      if: !cancelled()  # Elle durdurduğunda (Cancel yaptığında) YENİ RUN BAŞLATMAZ
+      if: '${{ !cancelled() }}'  # Tırnak içine alındı, syntax hatası giderildi
       env:
         GH_TOKEN: ${{ secrets.GH_TOKEN }}
       run: |
