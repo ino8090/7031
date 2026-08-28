@@ -1,5 +1,4 @@
-name: max Premier
-
+name: maxpremier
 on:
   push:
     branches: [ main ]
@@ -9,7 +8,8 @@ jobs:
   yayin:
     runs-on: ubuntu-latest
     timeout-minutes: 360
-
+    permissions:
+      contents: write
     steps:
     - name: 📥 Depoyu klonla
       uses: actions/checkout@v4
@@ -24,8 +24,36 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y --no-install-recommends ffmpeg ca-certificates openssl
         pip install requests
-        
+
+    - name: 📥 Kayıtlı State Dosyasını İndir
+      continue-on-error: true
+      run: |
+        curl -sL https://github.com/${{ github.repository }}/releases/download/state-data/state_maxpremier.json -o state_maxpremier.json
+
     - name: 🚀 Yayını başlat
       env:
+        STATE_FILE_NAME: "state_maxpremier.json"
+      run: python -u maxpremier.py
+
+    - name: 💾 Son Durumu Release Üzerinde Güncelle
+      if: always()
+      uses: softprops/action-gh-release@v1
+      with:
+        files: state_maxpremier.json
+        tag_name: state-data
+        name: "Yayın Kaldığı Yer (State)"
+        draft: false
+        prerelease: false
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: 🔁 Süre doldu, yeni run'ı tetikle
+      if: '${{ !cancelled() }}'
+      env:
         GH_TOKEN: ${{ secrets.GH_TOKEN }}
-      run: python mpremium.py
+      run: |
+        curl -X POST \
+          -H "Authorization: token $GH_TOKEN" \
+          -H "Accept: application/vnd.github+json" \
+          "https://api.github.com/repos/${{ github.repository }}/actions/workflows/maxpremier.yml/dispatches" \
+          -d '{"ref":"${{ github.ref_name }}"}'
