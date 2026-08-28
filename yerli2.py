@@ -17,19 +17,14 @@ RTMP_SERVER = f"{RTMP_URL}/{STREAM_KEY}"
 M3U_URL = os.getenv("M3U_URL", "https://raw.githubusercontent.com/ino8090/0101/refs/heads/main/yerli2.m3u")
 LOGO_URL = os.getenv("LOGO_URL", "https://raw.githubusercontent.com/ino8090/0101/refs/heads/main/1787745128505.png")
 
-GIST_ID = "34df90330e4b0daeed9a5b516c1c368d"
-GH_TOKEN = os.getenv("GH_TOKEN", "")
-
-STATE_FILE_NAME = os.getenv("STATE_FILE_NAME", "state.json")
-
-# GitHub Actions bu değişkeni otomatik sağlar; Actions dışında çalıştırılırsa None olur.
+STATE_FILE_NAME = os.getenv("STATE_FILE_NAME", "state_yerli.json")
 GITHUB_STEP_SUMMARY = os.getenv("GITHUB_STEP_SUMMARY")
 
 STREAM_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
 
 def format_hms(total_seconds):
-    """Saniyeyi SS:DD:SS formatına çevirir (00:04:52 gibi)."""
+    """Saniyeyi SS:DD:SS formatına çevirir."""
     total_seconds = int(total_seconds)
     hrs = total_seconds // 3600
     mins = (total_seconds % 3600) // 60
@@ -37,70 +32,35 @@ def format_hms(total_seconds):
     return f"{hrs:02d}:{mins:02d}:{secs:02d}"
 
 
-def get_gist_state():
-    """Gist'ten en son kalınan video indeksini ve saniyeyi okur."""
-    if not GIST_ID:
-        print("⚠️ GIST_ID tanımlı değil!")
-        return 0, 0
-    try:
-        url = f"https://api.github.com/gists/{GIST_ID}"
-        headers = {"Authorization": f"token {GH_TOKEN}"} if GH_TOKEN else {}
-        res = requests.get(url, headers=headers, timeout=10)
-        if res.status_code == 200:
-            files = res.json().get("files", {})
-            if STATE_FILE_NAME in files:
-                content = files[STATE_FILE_NAME]["content"]
-                data = json.loads(content)
+def get_local_state():
+    """Yerel state_yerli.json dosyasından son durumu okur."""
+    if os.path.exists(STATE_FILE_NAME):
+        try:
+            with open(STATE_FILE_NAME, "r", encoding="utf-8") as f:
+                data = json.load(f)
                 idx = data.get("last_index", 0)
                 sec = data.get("last_seconds", 0)
-                print(f"✅ Gist başarıyla okundu ({STATE_FILE_NAME}) -> İndeks: {idx}, Saniye: {sec}")
+                print(f"✅ Yerel state okundu ({STATE_FILE_NAME}) -> İndeks: {idx}, Saniye: {sec}")
                 return idx, sec
-            else:
-                print(f"⚠️ Gist'te '{STATE_FILE_NAME}' dosyası bulunamadı, 0'dan başlanıyor.")
-        else:
-            print(f"❌ Gist okuma başarısız! HTTP Durum Kodu: {res.status_code}")
-            print(f"❌ Detay: {res.text}")
-    except Exception as e:
-        print(f"⚠️ Gist okuma hatası: {e}")
+        except Exception as e:
+            print(f"⚠️ Yerel state okuma hatası: {e}")
+    else:
+        print(f"ℹ️ Yerel state dosyası bulunamadı, 0'dan başlanıyor.")
     return 0, 0
 
 
-def update_gist_state(index, seconds):
-    """Gist üzerine güncel konumu kaydeder."""
-    if not GIST_ID or not GH_TOKEN:
-        print("⚠️ GIST_ID veya GH_TOKEN eksik, Gist güncellenemiyor!")
-        return
+def update_local_state(index, seconds):
+    """Son konumu yerel state_yerli.json dosyasına kaydeder."""
     try:
-        url = f"https://api.github.com/gists/{GIST_ID}"
-        headers = {
-            "Authorization": f"token {GH_TOKEN}",
-            "Accept": "application/vnd.github.v3+json"
-        }
-        payload = {
-            "files": {
-                STATE_FILE_NAME: {
-                    "content": json.dumps({"last_index": int(index), "last_seconds": int(seconds)})
-                }
-            }
-        }
-        res = requests.patch(url, headers=headers, json=payload, timeout=5)
-        if res.status_code == 200:
-            print(f"💾 Konum Gist'e Kaydedildi ({STATE_FILE_NAME}) -> İndeks: {index}, Saniye: {int(seconds)}")
-        else:
-            print(f"⚠️ Gist güncelleme hatası HTTP: {res.status_code}")
-            print(f"⚠️ Detay: {res.text}")
-            print(f"⚠️ Kullanılan GIST_ID: {GIST_ID}")
-            print(f"⚠️ Token uzunluğu: {len(GH_TOKEN)} karakter")
-            print(f"⚠️ Token son 4 karakter: {GH_TOKEN[-4:] if len(GH_TOKEN) >= 4 else 'YOK'}")
+        data = {"last_index": int(index), "last_seconds": int(seconds)}
+        with open(STATE_FILE_NAME, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        print(f"💾 Konum yerel dosyaya kaydedildi -> İndeks: {index}, Saniye: {int(seconds)}")
     except Exception as e:
-        print(f"⚠️ Gist güncelleme hatası: {e}")
+        print(f"⚠️ Yerel state yazma hatası: {e}")
 
 
 def get_m3u_playlist(m3u_url):
-    """
-    M3U listesindeki tüm yayın linklerini ve varsa #EXTINF satırındaki
-    film/başlık adını birlikte çeker. Her öğe {"url":..., "title":...} sözlüğüdür.
-    """
     try:
         headers = {'User-Agent': STREAM_USER_AGENT}
         response = requests.get(m3u_url, headers=headers, timeout=15)
@@ -113,7 +73,6 @@ def get_m3u_playlist(m3u_url):
                 if not line:
                     continue
                 if line.startswith('#EXTINF'):
-                    # #EXTINF:-1,Film Adı (2024)  şeklindeki satırdan başlığı ayıkla
                     match = re.search(r',(.+)$', line)
                     pending_title = match.group(1).strip() if match else None
                 elif not line.startswith('#') and line.startswith('http'):
@@ -139,7 +98,6 @@ def download_logo():
 
 
 def print_dashboard(title, index, playlist_len, seconds, status="🟢 Yayında"):
-    """Konsola okunaklı bir gösterge paneli basar."""
     print("┌" + "─" * 58 + "┐")
     print(f"│ 🎬 Film           : {title[:36]:<36} │")
     print(f"│ 🔢 Sıra           : {index + 1}/{playlist_len:<32} │")
@@ -149,7 +107,6 @@ def print_dashboard(title, index, playlist_len, seconds, status="🟢 Yayında")
 
 
 def write_step_summary(title, index, playlist_len, seconds, status="🟢 Yayında"):
-    """GitHub Actions çalışma sayfasındaki 'Summary' panelini günceller."""
     if not GITHUB_STEP_SUMMARY:
         return
     try:
@@ -163,7 +120,6 @@ def write_step_summary(title, index, playlist_len, seconds, status="🟢 Yayınd
             f"| 📡 Durum | {status} |\n"
             f"| 🕒 Son güncelleme | {time.strftime('%Y-%m-%d %H:%M:%S')} |\n"
         )
-        # 'w' modunda yazıyoruz ki panel sürekli birikip uzamasın, en güncel durumu göstersin.
         with open(GITHUB_STEP_SUMMARY, "w", encoding="utf-8") as f:
             f.write(content)
     except Exception as e:
@@ -178,7 +134,7 @@ def start_m3u_stream():
 
     download_logo()
 
-    current_index, last_seconds = get_gist_state()
+    current_index, last_seconds = get_local_state()
 
     while True:
         playlist = get_m3u_playlist(M3U_URL)
@@ -275,12 +231,12 @@ def start_m3u_stream():
 
                     now = time.time()
 
-                    # Her 15 saniyede bir Gist'e kaydet
-                    if now - last_save_time > 15:
-                        update_gist_state(current_index, current_stream_seconds)
+                    # Her 30 saniyede bir yerel dosyayı güncelle
+                    if now - last_save_time > 30:
+                        update_local_state(current_index, current_stream_seconds)
                         last_save_time = now
 
-                    # Her 30 saniyede bir gösterge panelini güncelle
+                    # Her 30 saniyede bir paneli güncelle
                     if now - last_dashboard_time > 30:
                         print_dashboard(film_title, current_index, len(playlist), current_stream_seconds)
                         write_step_summary(film_title, current_index, len(playlist), current_stream_seconds)
@@ -290,11 +246,11 @@ def start_m3u_stream():
             write_step_summary(film_title, current_index, len(playlist), current_stream_seconds, status="✅ Bitti, sıradaki filme geçiliyor")
             current_index += 1
             last_seconds = 0
-            update_gist_state(current_index, 0)
+            update_local_state(current_index, 0)
         else:
             write_step_summary(film_title, current_index, len(playlist), current_stream_seconds, status="🔴 Bağlantı koptu, tekrar denenecek")
             last_seconds = current_stream_seconds
-            update_gist_state(current_index, last_seconds)
+            update_local_state(current_index, last_seconds)
 
         print("⚠️ Yayın durdu! 5 saniye sonra tekrar bağlanılıyor...")
         time.sleep(5)
