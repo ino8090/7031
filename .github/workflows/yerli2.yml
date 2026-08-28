@@ -9,7 +9,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 360
     permissions:
-      contents: write  # Release oluşturup güncelleyebilmesi için gerekli izin
+      contents: write  # Release oluşturup kaydetmek için şart
     steps:
     - name: 📥 Depoyu klonla
       uses: actions/checkout@v4
