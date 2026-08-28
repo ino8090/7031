@@ -11,13 +11,13 @@ import requests
 
 # ===================== AYARLAR =====================
 RTMP_URL = "rtmp://ssh101.bozztv.com:1935/ssh101"
-STREAM_KEY = os.getenv("STREAM_KEY") or "maxnimasyon"
+STREAM_KEY = os.getenv("STREAM_KEY") or "maxanimasyon"
 RTMP_SERVER = f"{RTMP_URL}/{STREAM_KEY}"
 
 M3U_URL = os.getenv("M3U_URL") or "https://raw.githubusercontent.com/ino8090/0101/refs/heads/main/Maxç.m3u"
 LOGO_URL = os.getenv("LOGO_URL") or "https://raw.githubusercontent.com/ino8090/0101/refs/heads/main/1787712844266.png"
 
-STATE_FILE_NAME = os.getenv("STATE_FILE_NAME", "state_maxnimasyon.json")
+STATE_FILE_NAME = os.getenv("STATE_FILE_NAME", "state_maxanimasyon.json")
 GITHUB_STEP_SUMMARY = os.getenv("GITHUB_STEP_SUMMARY")
 
 STREAM_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -33,7 +33,7 @@ def format_hms(total_seconds):
 
 
 def get_local_state():
-    """Yerel state_maxnimasyon.json dosyasından son durumu okur."""
+    """Yerel state_maxanimasyon.json dosyasından son durumu okur."""
     if os.path.exists(STATE_FILE_NAME):
         try:
             with open(STATE_FILE_NAME, "r", encoding="utf-8") as f:
@@ -50,7 +50,7 @@ def get_local_state():
 
 
 def update_local_state(index, seconds):
-    """Son konumu yerel state_maxnimasyon.json dosyasına kaydeder."""
+    """Son konumu yerel state_maxanimasyon.json dosyasına kaydeder."""
     try:
         data = {"last_index": int(index), "last_seconds": int(seconds)}
         with open(STATE_FILE_NAME, "w", encoding="utf-8") as f:
@@ -111,7 +111,7 @@ def write_step_summary(title, index, playlist_len, seconds, status="🟢 Yayınd
         return
     try:
         content = (
-            "## 📺 Canlı Yayın Durumu (maxnimasyon)\n\n"
+            "## 📺 Canlı Yayın Durumu (Maxanimasyon)\n\n"
             "| Alan | Değer |\n"
             "|---|---|\n"
             f"| 🎬 Şu an oynayan içerik | {title} |\n"
@@ -151,11 +151,48 @@ def start_m3u_stream():
         film_title = current_item["title"]
 
         print("=" * 60)
-        print("📺 maxnimasyon Canlı Aktarım Yayını (1080p 30fps - 2000k) Başlatılıyor")
+        print("📺 Maxanimasyon Canlı Aktarım Yayını (1080p 30fps - 2000k) Başlatılıyor")
         print(f"🎬 Oynatılan İçerik  : {film_title}")
-        print(f"📡 Kaynak Yayın     : {target_stream_url}")
         print(f"⏱️ Başlangıç Saniyesi: {last_seconds}")
         print(f"🚀 Hedef RTMP       : {RTMP_SERVER}")
+
+        headers_arg = f"User-Agent: {STREAM_USER_AGENT}\r\n"
+
+        # --- ÇİFT LİNK (VIDEO + SES SEPARATÖRÜ: ;) VE TEK LİNK KONTROLÜ ---
+        if ";" in target_stream_url:
+            video_url, audio_url = target_stream_url.split(";", 1)
+            video_url = video_url.strip()
+            audio_url = audio_url.strip()
+
+            print(f"🎥 Video Bağlantısı : {video_url}")
+            print(f"🔊 Ses Bağlantısı   : {audio_url}")
+
+            input_args = [
+                '-headers', headers_arg,
+                '-reconnect', '1', '-reconnect_streamed', '1', '-reconnect_delay_max', '5',
+                '-ss', str(last_seconds),
+                '-re',
+                '-i', video_url,
+                '-headers', headers_arg,
+                '-reconnect', '1', '-reconnect_streamed', '1', '-reconnect_delay_max', '5',
+                '-ss', str(last_seconds),
+                '-re',
+                '-i', audio_url
+            ]
+            audio_map = ['-map', '1:a:0']
+            logo_input_index = 2
+        else:
+            print(f"📡 Kaynak Yayın     : {target_stream_url}")
+            input_args = [
+                '-headers', headers_arg,
+                '-reconnect', '1', '-reconnect_streamed', '1', '-reconnect_delay_max', '5',
+                '-ss', str(last_seconds),
+                '-re',
+                '-i', target_stream_url
+            ]
+            audio_map = ['-map', '0:a?']
+            logo_input_index = 1
+
         print("=" * 60)
 
         print_dashboard(film_title, current_index, len(playlist), last_seconds, status="🟡 Başlatılıyor")
@@ -167,7 +204,7 @@ def start_m3u_stream():
             filter_str = (
                 '[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,'
                 'pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,fps=30[main];'
-                '[1:v]scale=-2:80[logo];'
+                f'[{logo_input_index}:v]scale=-2:80[logo];'
                 '[main][logo]overlay=55:55[v]'
             )
             logo_input = ['-i', 'logo.png']
@@ -178,21 +215,12 @@ def start_m3u_stream():
             )
             logo_input = []
 
-        headers_arg = f"User-Agent: {STREAM_USER_AGENT}\r\n"
-
         command = [
-            'ffmpeg',
-            '-headers', headers_arg,
-            '-reconnect', '1',
-            '-reconnect_streamed', '1',
-            '-reconnect_delay_max', '5',
-            '-ss', str(last_seconds),
-            '-re',
-            '-i', target_stream_url
-        ] + logo_input + [
+            'ffmpeg'
+        ] + input_args + logo_input + [
             '-filter_complex', filter_str,
-            '-map', '[v]',
-            '-map', '0:a?',
+            '-map', '[v]'
+        ] + audio_map + [
             '-c:v', 'libx264',
             '-preset', 'veryfast',
             '-pix_fmt', 'yuv420p',
