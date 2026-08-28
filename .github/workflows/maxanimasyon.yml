@@ -32,7 +32,7 @@ jobs:
 
     - name: 🚀 Yayını başlat
       env:
-        STATE_FILE_NAME: "state_maxnimasyon.json"
+        STATE_FILE_NAME: "state_maxanimasyon.json"
       run: python -u maxanimasyon.py
 
     - name: 💾 Son Durumu Release Üzerinde Güncelle
@@ -55,5 +55,5 @@ jobs:
         curl -X POST \
           -H "Authorization: token $GH_TOKEN" \
           -H "Accept: application/vnd.github+json" \
-          "https://api.github.com/repos/${{ github.repository }}/actions/workflows/maxnimasyon.yml/dispatches" \
+          "https://api.github.com/repos/${{ github.repository }}/actions/workflows/maxanimasyon.yml/dispatches" \
           -d '{"ref":"${{ github.ref_name }}"}'
