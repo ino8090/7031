@@ -1,4 +1,4 @@
-name: max yerli
+name: Maxyerli
 on:
   push:
     branches: [ main ]
@@ -9,7 +9,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 360
     permissions:
-      contents: write  # Release oluşturup state dosyasını güncelleyebilmesi için şart
+      contents: write
     steps:
     - name: 📥 Depoyu klonla
       uses: actions/checkout@v4
@@ -36,7 +36,7 @@ jobs:
       run: python -u yerli2.py
 
     - name: 💾 Son Durumu Release Üzerinde Güncelle
-      if: always()  # Durdursan bile en son kaldığı saniyeyi Release'e kaydeder
+      if: always()
       uses: softprops/action-gh-release@v1
       with:
         files: state_yerli.json
@@ -48,7 +48,7 @@ jobs:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
     - name: 🔁 Süre doldu, yeni run'ı tetikle
-      if: '${{ !cancelled() }}'  # Tırnak içine alındı, syntax hatası giderildi
+      if: always()
       env:
         GH_TOKEN: ${{ secrets.GH_TOKEN }}
       run: |
