@@ -204,7 +204,7 @@ def start_m3u_stream():
             filter_str = (
                 '[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,'
                 'pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,fps=30[main];'
-                f'[{logo_input_index}:v]scale=-2:80[logo];'
+                f'[{logo_input_index}:v]scale=-2:105[logo];'
                 '[main][logo]overlay=55:55[v]'
             )
             logo_input = ['-i', 'logo.png']
