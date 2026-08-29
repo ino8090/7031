@@ -1,7 +1,5 @@
 name: Maxyerli
 on:
-  push:
-    branches: [ main ]
   workflow_dispatch:
 
 jobs:
@@ -39,7 +37,7 @@ jobs:
       run: python -u yerli2.py
 
     - name: 💾 Son Durumu Release Üzerinde Güncelle
-      if: always()
+      if: always() && !cancelled()
       uses: softprops/action-gh-release@v1
       with:
         files: state_yerli.json
@@ -51,7 +49,7 @@ jobs:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
     - name: 🔁 6 Saat Süre Dolunca Otomatik Yeni Run Tetikle
-      if: cancelled() == false
+      if: success()
       env:
         GH_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
       run: |
