@@ -8,6 +8,10 @@ import sys
 import time
 import subprocess
 import requests
+import urllib3
+
+# SSL Uyarılarını Konsoldan Gizle
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # ===================== AYARLAR =====================
 RTMP_URL = "rtmp://ssh101.bozztv.com:1935/ssh101"
@@ -60,7 +64,7 @@ def update_local_state(index, seconds):
 def get_m3u_playlist(m3u_url):
     try:
         headers = {'User-Agent': STREAM_USER_AGENT}
-        response = requests.get(m3u_url, headers=headers, timeout=15)
+        response = requests.get(m3u_url, headers=headers, timeout=15, verify=False)
         if response.status_code == 200:
             lines = response.text.splitlines()
             playlist = []
@@ -85,7 +89,7 @@ def get_m3u_playlist(m3u_url):
 def download_logo():
     try:
         headers = {'User-Agent': STREAM_USER_AGENT}
-        response = requests.get(LOGO_URL, headers=headers, timeout=15)
+        response = requests.get(LOGO_URL, headers=headers, timeout=15, verify=False)
         if response.status_code == 200 and len(response.content) > 0:
             with open('logo.png', 'wb') as f:
                 f.write(response.content)
@@ -147,34 +151,27 @@ def start_m3u_stream():
         print(f"🎬 Oynatılan İçerik  : {film_title}")
         print(f"⏱️ Başlangıç Saniyesi: {last_seconds}")
 
-        headers = {
-            'User-Agent': STREAM_USER_AGENT,
-            'Referer': 'https://gelisitirime.top/',
-            'Origin': 'https://gelisitirime.top',
-            'Accept': '*/*',
-            'Connection': 'keep-alive'
-        }
+        headers_str = (
+            f"User-Agent: {STREAM_USER_AGENT}\r\n"
+            f"Referer: https://gelisitirime.top/\r\n"
+            f"Origin: https://gelisitirime.top\r\n"
+            f"Accept: */*\r\n"
+            f"Connection: keep-alive\r\n"
+        )
 
-        try:
-            req = requests.get(target_stream_url, headers=headers, stream=True, timeout=15, verify=False)
-            if req.status_code not in [200, 206]:
-                print(f"⚠️ Sunucu Bağlantıyı Reddetti (HTTP {req.status_code})")
-                consecutive_failures += 1
-                if consecutive_failures >= 3:
-                    current_index += 1
-                    last_seconds = 0
-                    consecutive_failures = 0
-                time.sleep(5)
-                continue
-        except Exception as e:
-            print(f"⚠️ Bağlantı Hatası: {e}")
-            consecutive_failures += 1
-            if consecutive_failures >= 3:
-                current_index += 1
-                last_seconds = 0
-                consecutive_failures = 0
-            time.sleep(5)
-            continue
+        player_input_args = [
+            '-user_agent', STREAM_USER_AGENT,
+            '-headers', headers_str,
+            '-tls_verify', '0',
+            '-reconnect', '1',
+            '-reconnect_streamed', '1',
+            '-reconnect_delay_max', '10',
+            '-err_detect', 'ignore_err',
+            '-rw_timeout', '15000000',
+            '-ss', str(last_seconds),
+            '-re',
+            '-i', target_stream_url
+        ]
 
         print_dashboard(film_title, current_index, len(playlist), last_seconds, status="🟢 Yayında")
 
@@ -195,12 +192,7 @@ def start_m3u_stream():
             )
             logo_input = []
 
-        command = [
-            'ffmpeg',
-            '-ss', str(last_seconds),
-            '-re',
-            '-i', 'pipe:0'
-        ] + logo_input + [
+        command = ['ffmpeg'] + player_input_args + logo_input + [
             '-filter_complex', filter_str,
             '-map', '[v]',
             '-map', '0:a?',
@@ -219,37 +211,33 @@ def start_m3u_stream():
             RTMP_SERVER
         ]
 
-        process = subprocess.Popen(command, stdin=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        process = subprocess.Popen(command, stderr=subprocess.PIPE, universal_newlines=True)
 
         last_save_time = time.time()
         last_dashboard_time = time.time()
         current_stream_seconds = last_seconds
 
-        try:
-            for chunk in req.iter_content(chunk_size=1024 * 256):
-                if chunk:
-                    process.stdin.write(chunk)
-                    process.stdin.flush()
+        while True:
+            line = process.stderr.readline()
+            if not line and process.poll() is not None:
+                break
 
-                now = time.time()
-                if now - last_save_time > 30:
-                    current_stream_seconds += 30
-                    update_local_state(current_index, current_stream_seconds)
-                    last_save_time = now
+            if "time=" in line:
+                time_match = re.search(r'time=(\d+):(\d+):(\d+\.\d+)', line)
+                if time_match:
+                    hrs, mins, secs = time_match.groups()
+                    played_seconds = int(hrs) * 3600 + int(mins) * 60 + float(secs)
+                    current_stream_seconds = last_seconds + played_seconds
 
-                if now - last_dashboard_time > 30:
-                    print_dashboard(film_title, current_index, len(playlist), current_stream_seconds)
-                    write_step_summary(film_title, current_index, len(playlist), current_stream_seconds)
-                    last_dashboard_time = now
+                    now = time.time()
+                    if now - last_save_time > 30:
+                        update_local_state(current_index, current_stream_seconds)
+                        last_save_time = now
 
-        except Exception as e:
-            print(f"⚠️ Akış kesildi: {e}")
-
-        try:
-            process.stdin.close()
-            process.wait()
-        except:
-            pass
+                    if now - last_dashboard_time > 30:
+                        print_dashboard(film_title, current_index, len(playlist), current_stream_seconds)
+                        write_step_summary(film_title, current_index, len(playlist), current_stream_seconds)
+                        last_dashboard_time = now
 
         if process.returncode == 0:
             print("✅ İçerik bitti, sıradakine geçiliyor.")
@@ -265,6 +253,7 @@ def start_m3u_stream():
                 consecutive_failures = 0
 
             if consecutive_failures >= 3:
+                print("❌ Bu link 3 kere üst üste açılamadı. Sıradaki filme geçiliyor...")
                 current_index += 1
                 last_seconds = 0
                 consecutive_failures = 0
