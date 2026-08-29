@@ -9,6 +9,7 @@ import time
 import subprocess
 import requests
 import urllib3
+from urllib.parse import quote, urlparse, urlunparse
 
 # SSL Sertifika Uyarılarını Konsoldan Gizle
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -25,6 +26,20 @@ STATE_FILE_NAME = os.getenv("STATE_FILE_NAME", "state_yerli.json")
 GITHUB_STEP_SUMMARY = os.getenv("GITHUB_STEP_SUMMARY")
 
 STREAM_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+
+
+def clean_url(url_str):
+    """URL içindeki boşlukları ve özel karakterleri %20 formatına çevirir (FFmpeg hatasını çözer)."""
+    parsed = urlparse(url_str)
+    encoded_path = quote(parsed.path)
+    return urlunparse((
+        parsed.scheme,
+        parsed.netloc,
+        encoded_path,
+        parsed.params,
+        parsed.query,
+        parsed.fragment
+    ))
 
 
 def format_hms(total_seconds):
@@ -148,17 +163,20 @@ def start_m3u_stream():
             current_index = 0
             last_seconds = 0
 
-        # M3U güncellenmiş olsa dahi doğrudan o anki current_index sırasındaki linki alır
         current_item = playlist[current_index]
-        target_stream_url = current_item["url"].split(";")[0].strip()
+        
+        # URL'yi temizle ve encode et (Boşlukları %20 yapar)
+        raw_url = current_item["url"].split(";")[0].strip()
+        target_stream_url = clean_url(raw_url)
+        
         film_title = current_item["title"]
 
         print("=" * 60)
         print("📺 Maxyerli Canlı Aktarım Yayını Başlatılıyor")
         print(f"🎬 Oynatılan İçerik  : {film_title}")
+        print(f"🔗 Temizlenen Link  : {target_stream_url}")
         print(f"⏱️ Başlangıç Saniyesi: {last_seconds}")
 
-        # Tarayıcı gibi istek atan başlıklar (Açılmayan linkleri çözen kısım)
         headers_str = (
             f"User-Agent: {STREAM_USER_AGENT}\r\n"
             f"Referer: https://gelisitirime.top/\r\n"
@@ -170,13 +188,15 @@ def start_m3u_stream():
         player_input_args = [
             '-user_agent', STREAM_USER_AGENT,
             '-headers', headers_str,
-            '-tls_verify', '0',               # SSL sertifika hatalarını yok sayar
-            '-reconnect', '1',                 # Anlık kopmada tekrar bağlanır
+            '-tls_verify', '0',
+            '-reconnect', '1',
             '-reconnect_streamed', '1',
+            '-reconnect_at_eof', '1',
             '-reconnect_delay_max', '10',
+            '-multiple_requests', '1',
             '-err_detect', 'ignore_err',
-            '-rw_timeout', '15000000',         # Zaman aşımını önler
-            '-ss', str(last_seconds),          # Kaldığı saniyeden başlatır
+            '-rw_timeout', '15000000',
+            '-ss', str(last_seconds),
             '-re',
             '-i', target_stream_url
         ]
