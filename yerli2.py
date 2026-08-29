@@ -29,7 +29,7 @@ STREAM_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.3
 
 
 def clean_url(url_str):
-    """URL içindeki boşlukları ve özel karakterleri %20 formatına çevirir (FFmpeg hatasını çözer)."""
+    """URL içindeki boşlukları ve özel karakterleri %20 formatına çevirir."""
     parsed = urlparse(url_str)
     encoded_path = quote(parsed.path)
     return urlunparse((
@@ -51,7 +51,6 @@ def format_hms(total_seconds):
 
 
 def get_local_state():
-    """Kayıtlı state dosyasından sadece sıra indeksini ve saniyeyi okur."""
     if os.path.exists(STATE_FILE_NAME):
         try:
             with open(STATE_FILE_NAME, "r", encoding="utf-8") as f:
@@ -68,7 +67,6 @@ def get_local_state():
 
 
 def update_local_state(index, seconds):
-    """Sadece sıra indeksini ve kalınan saniyeyi yerel dosyaya kaydeder."""
     try:
         data = {
             "last_index": int(index),
@@ -164,42 +162,49 @@ def start_m3u_stream():
             last_seconds = 0
 
         current_item = playlist[current_index]
-        
-        # URL'yi temizle ve encode et (Boşlukları %20 yapar)
         raw_url = current_item["url"].split(";")[0].strip()
         target_stream_url = clean_url(raw_url)
-        
         film_title = current_item["title"]
 
         print("=" * 60)
-        print("📺 Maxyerli Canlı Aktarım Yayını Başlatılıyor")
+        print("📺 Maxyerli Canlı Aktarım Yayını Başlatılıyor (Python Stream Mode)")
         print(f"🎬 Oynatılan İçerik  : {film_title}")
         print(f"🔗 Temizlenen Link  : {target_stream_url}")
         print(f"⏱️ Başlangıç Saniyesi: {last_seconds}")
 
-        headers_str = (
-            f"User-Agent: {STREAM_USER_AGENT}\r\n"
-            f"Referer: https://gelisitirime.top/\r\n"
-            f"Origin: https://gelisitirime.top\r\n"
-            f"Accept: */*\r\n"
-            f"Connection: keep-alive\r\n"
-        )
+        headers = {
+            'User-Agent': STREAM_USER_AGENT,
+            'Referer': 'https://gelisitirime.top/',
+            'Origin': 'https://gelisitirime.top'
+        }
 
-        player_input_args = [
-            '-user_agent', STREAM_USER_AGENT,
-            '-headers', headers_str,
-            '-tls_verify', '0',
-            '-reconnect', '1',
-            '-reconnect_streamed', '1',
-            '-reconnect_at_eof', '1',
-            '-reconnect_delay_max', '10',
-            '-multiple_requests', '1',
-            '-err_detect', 'ignore_err',
-            '-rw_timeout', '15000000',
-            '-ss', str(last_seconds),
-            '-re',
-            '-i', target_stream_url
-        ]
+        # Kaldığı saniyeden başlatmak için Range başlığı ekle
+        if last_seconds > 0:
+            headers['Range'] = f'bytes=0-'
+
+        # Stream bağlantısı aç (FFmpeg TLS hatalarını tamamen korur)
+        try:
+            req_stream = requests.get(target_stream_url, headers=headers, stream=True, timeout=20, verify=False)
+            if req_stream.status_code not in [200, 206]:
+                print(f"⚠️ HTTP Bağlantı Hatası: {req_stream.status_code}")
+                consecutive_failures += 1
+                if consecutive_failures >= 3:
+                    current_index += 1
+                    last_seconds = 0
+                    consecutive_failures = 0
+                    update_local_state(current_index, 0)
+                time.sleep(5)
+                continue
+        except Exception as e:
+            print(f"⚠️ Python Akış Hatası: {e}")
+            consecutive_failures += 1
+            if consecutive_failures >= 3:
+                current_index += 1
+                last_seconds = 0
+                consecutive_failures = 0
+                update_local_state(current_index, 0)
+            time.sleep(5)
+            continue
 
         print_dashboard(film_title, current_index, len(playlist), last_seconds, status="🟢 Yayında")
 
@@ -220,7 +225,12 @@ def start_m3u_stream():
             )
             logo_input = []
 
-        command = ['ffmpeg'] + player_input_args + logo_input + [
+        command = [
+            'ffmpeg',
+            '-ss', str(last_seconds),
+            '-re',
+            '-i', 'pipe:0'
+        ] + logo_input + [
             '-filter_complex', filter_str,
             '-map', '[v]',
             '-map', '0:a?',
@@ -239,33 +249,40 @@ def start_m3u_stream():
             RTMP_SERVER
         ]
 
-        process = subprocess.Popen(command, stderr=subprocess.PIPE, universal_newlines=True)
+        process = subprocess.Popen(command, stdin=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=False)
 
         last_save_time = time.time()
         last_dashboard_time = time.time()
         current_stream_seconds = last_seconds
 
-        while True:
-            line = process.stderr.readline()
-            if not line and process.poll() is not None:
-                break
+        try:
+            for chunk in req_stream.iter_content(chunk_size=64 * 1024):
+                if not chunk:
+                    break
+                
+                try:
+                    process.stdin.write(chunk)
+                    process.stdin.flush()
+                except (BrokenPipeError, IOError):
+                    break
 
-            if "time=" in line:
-                time_match = re.search(r'time=(\d+):(\d+):(\d+\.\d+)', line)
-                if time_match:
-                    hrs, mins, secs = time_match.groups()
-                    played_seconds = int(hrs) * 3600 + int(mins) * 60 + float(secs)
-                    current_stream_seconds = last_seconds + played_seconds
+                now = time.time()
+                # Geçen süreyi yaklaşık hesapla (chunk akışı baz alınarak)
+                if now - last_save_time > 30:
+                    current_stream_seconds += 30
+                    update_local_state(current_index, current_stream_seconds)
+                    last_save_time = now
 
-                    now = time.time()
-                    if now - last_save_time > 30:
-                        update_local_state(current_index, current_stream_seconds)
-                        last_save_time = now
+                if now - last_dashboard_time > 30:
+                    print_dashboard(film_title, current_index, len(playlist), current_stream_seconds)
+                    write_step_summary(film_title, current_index, len(playlist), current_stream_seconds)
+                    last_dashboard_time = now
 
-                    if now - last_dashboard_time > 30:
-                        print_dashboard(film_title, current_index, len(playlist), current_stream_seconds)
-                        write_step_summary(film_title, current_index, len(playlist), current_stream_seconds)
-                        last_dashboard_time = now
+        except Exception as e:
+            print(f"⚠️ Akış sırasında kesinti: {e}")
+
+        process.stdin.close()
+        process.wait()
 
         if process.returncode == 0:
             print("✅ İçerik bitti, sıradakine geçiliyor.")
@@ -274,7 +291,7 @@ def start_m3u_stream():
             consecutive_failures = 0
             update_local_state(current_index, 0)
         else:
-            print(f"⚠️ Yayın koptu (Return Code: {process.returncode}).")
+            print(f"⚠️ Yayın koptu/bitti (Return Code: {process.returncode}).")
             if current_stream_seconds == last_seconds:
                 consecutive_failures += 1
             else:
