@@ -47,8 +47,8 @@ jobs:
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-    - name: 🔁 Süre doldu, yeni run'ı tetikle
-      if: always()
+    - name: 🔁 6 Saat Süre Dolunca Otomatik Yeni Run Tetikle
+      if: failure() || success()
       env:
         GH_TOKEN: ${{ secrets.GH_TOKEN }}
       run: |
