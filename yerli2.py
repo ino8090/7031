@@ -147,34 +147,36 @@ def start_m3u_stream():
         print(f"🎬 Oynatılan İçerik  : {film_title}")
         print(f"⏱️ Başlangıç Saniyesi: {last_seconds}")
 
-        # Oynatıcı taklidi yapan HTTP başlıkları
-        headers_str = (
-            f"User-Agent: {STREAM_USER_AGENT}\r\n"
-            f"Referer: https://gelisitirime.top/\r\n"
-            f"Origin: https://gelisitirime.top\r\n"
-            f"Accept: */*\r\n"
-            f"Connection: keep-alive\r\n"
-        )
+        headers = {
+            'User-Agent': STREAM_USER_AGENT,
+            'Referer': 'https://gelisitirime.top/',
+            'Origin': 'https://gelisitirime.top',
+            'Accept': '*/*',
+            'Connection': 'keep-alive'
+        }
 
-        # Oynatıcı gibi davranmasını sağlayan gelişmiş FFmpeg girdi parametreleri
-        player_input_args = [
-            '-user_agent', STREAM_USER_AGENT,
-            '-headers', headers_str,
-            '-tls_verify', '0',
-            '-http_persistent', '1',
-            '-multiple_requests', '1',
-            '-reconnect', '1',
-            '-reconnect_streamed', '1',
-            '-reconnect_delay_max', '10',
-            '-rw_timeout', '20000000',
-            '-probesize', '50M',
-            '-analyzeduration', '10000000',
-            '-ss', str(last_seconds),
-            '-re',
-            '-i', target_stream_url
-        ]
+        try:
+            req = requests.get(target_stream_url, headers=headers, stream=True, timeout=15, verify=False)
+            if req.status_code not in [200, 206]:
+                print(f"⚠️ Sunucu Bağlantıyı Reddetti (HTTP {req.status_code})")
+                consecutive_failures += 1
+                if consecutive_failures >= 3:
+                    current_index += 1
+                    last_seconds = 0
+                    consecutive_failures = 0
+                time.sleep(5)
+                continue
+        except Exception as e:
+            print(f"⚠️ Bağlantı Hatası: {e}")
+            consecutive_failures += 1
+            if consecutive_failures >= 3:
+                current_index += 1
+                last_seconds = 0
+                consecutive_failures = 0
+            time.sleep(5)
+            continue
 
-        print_dashboard(film_title, current_index, len(playlist), last_seconds, status="🟡 Başlatılıyor")
+        print_dashboard(film_title, current_index, len(playlist), last_seconds, status="🟢 Yayında")
 
         has_logo = os.path.exists('logo.png') and os.path.getsize('logo.png') > 0
 
@@ -193,7 +195,12 @@ def start_m3u_stream():
             )
             logo_input = []
 
-        command = ['ffmpeg'] + player_input_args + logo_input + [
+        command = [
+            'ffmpeg',
+            '-ss', str(last_seconds),
+            '-re',
+            '-i', 'pipe:0'
+        ] + logo_input + [
             '-filter_complex', filter_str,
             '-map', '[v]',
             '-map', '0:a?',
@@ -212,33 +219,37 @@ def start_m3u_stream():
             RTMP_SERVER
         ]
 
-        process = subprocess.Popen(command, stderr=subprocess.PIPE, universal_newlines=True)
+        process = subprocess.Popen(command, stdin=subprocess.PIPE, stderr=subprocess.DEVNULL)
 
         last_save_time = time.time()
         last_dashboard_time = time.time()
         current_stream_seconds = last_seconds
 
-        while True:
-            line = process.stderr.readline()
-            if not line and process.poll() is not None:
-                break
+        try:
+            for chunk in req.iter_content(chunk_size=1024 * 256):
+                if chunk:
+                    process.stdin.write(chunk)
+                    process.stdin.flush()
 
-            if "time=" in line:
-                time_match = re.search(r'time=(\d+):(\d+):(\d+\.\d+)', line)
-                if time_match:
-                    hrs, mins, secs = time_match.groups()
-                    played_seconds = int(hrs) * 3600 + int(mins) * 60 + float(secs)
-                    current_stream_seconds = last_seconds + played_seconds
+                now = time.time()
+                if now - last_save_time > 30:
+                    current_stream_seconds += 30
+                    update_local_state(current_index, current_stream_seconds)
+                    last_save_time = now
 
-                    now = time.time()
-                    if now - last_save_time > 30:
-                        update_local_state(current_index, current_stream_seconds)
-                        last_save_time = now
+                if now - last_dashboard_time > 30:
+                    print_dashboard(film_title, current_index, len(playlist), current_stream_seconds)
+                    write_step_summary(film_title, current_index, len(playlist), current_stream_seconds)
+                    last_dashboard_time = now
 
-                    if now - last_dashboard_time > 30:
-                        print_dashboard(film_title, current_index, len(playlist), current_stream_seconds)
-                        write_step_summary(film_title, current_index, len(playlist), current_stream_seconds)
-                        last_dashboard_time = now
+        except Exception as e:
+            print(f"⚠️ Akış kesildi: {e}")
+
+        try:
+            process.stdin.close()
+            process.wait()
+        except:
+            pass
 
         if process.returncode == 0:
             print("✅ İçerik bitti, sıradakine geçiliyor.")
@@ -248,14 +259,12 @@ def start_m3u_stream():
             update_local_state(current_index, 0)
         else:
             print(f"⚠️ Yayın koptu (Return Code: {process.returncode}).")
-            
             if current_stream_seconds == last_seconds:
                 consecutive_failures += 1
             else:
                 consecutive_failures = 0
 
             if consecutive_failures >= 3:
-                print("❌ Bu link sunucudan çekilemiyor. Sıradaki filme geçiliyor...")
                 current_index += 1
                 last_seconds = 0
                 consecutive_failures = 0
