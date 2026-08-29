@@ -10,8 +10,6 @@ jobs:
     timeout-minutes: 360
     permissions:
       contents: write
-      actions: write
-
     steps:
     - name: 📥 Depoyu klonla
       uses: actions/checkout@v4
@@ -35,7 +33,6 @@ jobs:
     - name: 🚀 Yayını başlat
       env:
         STATE_FILE_NAME: "state_yerli.json"
-        STREAM_KEY: ${{ secrets.STREAM_KEY }}
       run: python -u yerli2.py
 
     - name: 💾 Son Durumu Release Üzerinde Güncelle
@@ -51,9 +48,9 @@ jobs:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
     - name: 🔁 6 Saat Süre Dolunca Otomatik Yeni Run Tetikle
-      if: always()
+      if: failure() || success()
       env:
-        GH_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
+        GH_TOKEN: ${{ secrets.GH_TOKEN }}
       run: |
         curl -X POST \
           -H "Authorization: token $GH_TOKEN" \
