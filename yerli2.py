@@ -10,7 +10,7 @@ import subprocess
 import requests
 import urllib3
 
-# SSL Uyarılarını Konsoldan Gizle
+# SSL Sertifika Uyarılarını Konsoldan Gizle
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # ===================== AYARLAR =====================
@@ -36,13 +36,14 @@ def format_hms(total_seconds):
 
 
 def get_local_state():
+    """Kayıtlı state dosyasından sadece sıra indeksini ve saniyeyi okur."""
     if os.path.exists(STATE_FILE_NAME):
         try:
             with open(STATE_FILE_NAME, "r", encoding="utf-8") as f:
                 data = json.load(f)
                 idx = data.get("last_index", 0)
                 sec = data.get("last_seconds", 0)
-                print(f"✅ Yerel state okundu ({STATE_FILE_NAME}) => İndeks: {idx}, Saniye: {sec}")
+                print(f"✅ Yerel state okundu => İndeks: {idx}, Saniye: {sec}")
                 return idx, sec
         except Exception as e:
             print(f"⚠️ Yerel state okuma hatası: {e}")
@@ -52,11 +53,15 @@ def get_local_state():
 
 
 def update_local_state(index, seconds):
+    """Sadece sıra indeksini ve kalınan saniyeyi yerel dosyaya kaydeder."""
     try:
-        data = {"last_index": int(index), "last_seconds": int(seconds)}
+        data = {
+            "last_index": int(index),
+            "last_seconds": int(seconds)
+        }
         with open(STATE_FILE_NAME, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
-        print(f"💾 Konum yerel dosyaya kaydedildi => İndeks: {index}, Saniye: {int(seconds)}")
+        print(f"💾 Konum kaydedildi => Sıra İndeksi: {index} | Saniye: {int(seconds)}")
     except Exception as e:
         print(f"⚠️ Yerel state yazma hatası: {e}")
 
@@ -129,6 +134,7 @@ def write_step_summary(title, index, playlist_len, seconds, status="🟢 Yayınd
 
 def start_m3u_stream():
     download_logo()
+    
     current_index, last_seconds = get_local_state()
     consecutive_failures = 0
 
@@ -142,6 +148,7 @@ def start_m3u_stream():
             current_index = 0
             last_seconds = 0
 
+        # M3U güncellenmiş olsa dahi doğrudan o anki current_index sırasındaki linki alır
         current_item = playlist[current_index]
         target_stream_url = current_item["url"].split(";")[0].strip()
         film_title = current_item["title"]
@@ -151,6 +158,7 @@ def start_m3u_stream():
         print(f"🎬 Oynatılan İçerik  : {film_title}")
         print(f"⏱️ Başlangıç Saniyesi: {last_seconds}")
 
+        # Tarayıcı gibi istek atan başlıklar (Açılmayan linkleri çözen kısım)
         headers_str = (
             f"User-Agent: {STREAM_USER_AGENT}\r\n"
             f"Referer: https://gelisitirime.top/\r\n"
@@ -162,13 +170,13 @@ def start_m3u_stream():
         player_input_args = [
             '-user_agent', STREAM_USER_AGENT,
             '-headers', headers_str,
-            '-tls_verify', '0',
-            '-reconnect', '1',
+            '-tls_verify', '0',               # SSL sertifika hatalarını yok sayar
+            '-reconnect', '1',                 # Anlık kopmada tekrar bağlanır
             '-reconnect_streamed', '1',
             '-reconnect_delay_max', '10',
             '-err_detect', 'ignore_err',
-            '-rw_timeout', '15000000',
-            '-ss', str(last_seconds),
+            '-rw_timeout', '15000000',         # Zaman aşımını önler
+            '-ss', str(last_seconds),          # Kaldığı saniyeden başlatır
             '-re',
             '-i', target_stream_url
         ]
@@ -257,10 +265,10 @@ def start_m3u_stream():
                 current_index += 1
                 last_seconds = 0
                 consecutive_failures = 0
+                update_local_state(current_index, 0)
             else:
                 last_seconds = current_stream_seconds
-
-            update_local_state(current_index, last_seconds)
+                update_local_state(current_index, last_seconds)
 
         time.sleep(5)
 
