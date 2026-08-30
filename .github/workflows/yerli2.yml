@@ -1,5 +1,7 @@
 name: Maxyerli
 on:
+  push:
+    branches: [ main ]
   workflow_dispatch:
 
 jobs:
@@ -8,8 +10,6 @@ jobs:
     timeout-minutes: 360
     permissions:
       contents: write
-      actions: write
-
     steps:
     - name: 📥 Depoyu klonla
       uses: actions/checkout@v4
@@ -33,11 +33,10 @@ jobs:
     - name: 🚀 Yayını başlat
       env:
         STATE_FILE_NAME: "state_yerli.json"
-        STREAM_KEY: ${{ secrets.STREAM_KEY }}
       run: python -u yerli2.py
 
     - name: 💾 Son Durumu Release Üzerinde Güncelle
-      if: always() && !cancelled()
+      if: always()
       uses: softprops/action-gh-release@v1
       with:
         files: state_yerli.json
@@ -49,12 +48,17 @@ jobs:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
     - name: 🔁 6 Saat Süre Dolunca Otomatik Yeni Run Tetikle
-      if: success()
+      if: failure() || success()
       env:
-        GH_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
+        GH_TOKEN: ${{ secrets.GH_TOKEN }}
       run: |
         curl -X POST \
           -H "Authorization: token $GH_TOKEN" \
           -H "Accept: application/vnd.github+json" \
           "https://api.github.com/repos/${{ github.repository }}/actions/workflows/yerli2.yml/dispatches" \
           -d '{"ref":"${{ github.ref_name }}"}'
+
+
+https://s9.gelsistirire.top:443/d/yinlcacpsk3rtzj5b3wr5rovdjxiqdsk5n53tonobvq6yvwlbr2sr6zfh2jvxws62p3zi4re/Hukumet%20Kadin%202013%20WEB%20DL%201080p%20trdub.mp4
+
+Bu linki yayında oynatmıyor neden acaba ve bu sorun nasıl çözebilirim
