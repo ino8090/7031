@@ -16,6 +16,7 @@ RTMP_SERVER = f"{RTMP_URL}/{STREAM_KEY}"
 
 M3U_URL = os.getenv("M3U_URL") or "https://raw.githubusercontent.com/ino8090/0101/refs/heads/main/Maxç.m3u"
 LOGO_URL = os.getenv("LOGO_URL") or "https://raw.githubusercontent.com/ino8090/0101/refs/heads/main/1787712844266.png"
+LOGO2_URL = os.getenv("LOGO2_URL") or "https://raw.githubusercontent.com/ino8090/0101/refs/heads/main/file_00000000eae88246b13a221f896ea385.png"
 
 STATE_FILE_NAME = os.getenv("STATE_FILE_NAME", "state_maxanimasyon.json")
 GITHUB_STEP_SUMMARY = os.getenv("GITHUB_STEP_SUMMARY")
@@ -86,15 +87,27 @@ def get_m3u_playlist(m3u_url):
 
 
 def download_logo():
+    headers = {'User-Agent': STREAM_USER_AGENT}
+    
+    # 1. Logo İndir
     try:
-        headers = {'User-Agent': STREAM_USER_AGENT}
         response = requests.get(LOGO_URL, headers=headers, timeout=15)
         if response.status_code == 200 and len(response.content) > 0:
             with open('logo.png', 'wb') as f:
                 f.write(response.content)
-            print("✅ Logo başarıyla indirildi.")
+            print("✅ 1. Logo başarıyla indirildi.")
     except Exception as e:
-        print(f"⚠️ Logo indirme hatası: {e}")
+        print(f"⚠️ 1. Logo indirme hatası: {e}")
+
+    # 2. Logo İndir
+    try:
+        response2 = requests.get(LOGO2_URL, headers=headers, timeout=15)
+        if response2.status_code == 200 and len(response2.content) > 0:
+            with open('logo2.png', 'wb') as f:
+                f.write(response2.content)
+            print("✅ 2. Logo başarıyla indirildi.")
+    except Exception as e:
+        print(f"⚠️ 2. Logo indirme hatası: {e}")
 
 
 def print_dashboard(title, index, playlist_len, seconds, status="🟢 Yayında"):
@@ -128,7 +141,8 @@ def write_step_summary(title, index, playlist_len, seconds, status="🟢 Yayınd
 
 def start_m3u_stream():
     print(f"🔧 Kullanılan M3U   : {M3U_URL}")
-    print(f"🔧 Kullanılan Logo  : {LOGO_URL}")
+    print(f"🔧 Kullanılan Logo 1: {LOGO_URL}")
+    print(f"🔧 Kullanılan Logo 2: {LOGO2_URL}")
     print(f"🔧 State dosyası    : {STATE_FILE_NAME}")
     print(f"🔧 RTMP hedefi      : {RTMP_SERVER}")
 
@@ -180,7 +194,8 @@ def start_m3u_stream():
                 '-i', audio_url
             ]
             audio_map = ['-map', '1:a:0']
-            logo_input_index = 2
+            logo1_input_index = 2
+            logo2_input_index = 3
         else:
             print(f"📡 Kaynak Yayın     : {target_stream_url}")
             input_args = [
@@ -191,33 +206,56 @@ def start_m3u_stream():
                 '-i', target_stream_url
             ]
             audio_map = ['-map', '0:a?']
-            logo_input_index = 1
+            logo1_input_index = 1
+            logo2_input_index = 2
 
         print("=" * 60)
 
         print_dashboard(film_title, current_index, len(playlist), last_seconds, status="🟡 Başlatılıyor")
         write_step_summary(film_title, current_index, len(playlist), last_seconds, status="🟡 Başlatılıyor")
 
-        has_logo = os.path.exists('logo.png') and os.path.getsize('logo.png') > 0
+        has_logo1 = os.path.exists('logo.png') and os.path.getsize('logo.png') > 0
+        has_logo2 = os.path.exists('logo2.png') and os.path.getsize('logo2.png') > 0
 
-        if has_logo:
+        logo_inputs = []
+        
+        # Filtre zinciri senaryoları
+        if has_logo1 and has_logo2:
+            logo_inputs = ['-i', 'logo.png', '-i', 'logo2.png']
             filter_str = (
                 '[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,'
                 'pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,fps=30[main];'
-                f'[{logo_input_index}:v]scale=-2:109[logo];'
-                '[main][logo]overlay=50:50[v]'
+                f'[{logo1_input_index}:v]scale=-2:109[logo1];'
+                f'[{logo2_input_index}:v]scale=-2:109[logo2];'
+                '[main][logo1]overlay=50:50[tmp];'
+                '[tmp][logo2]overlay=main_w-overlay_w-50:50[v]'
             )
-            logo_input = ['-i', 'logo.png']
+        elif has_logo1:
+            logo_inputs = ['-i', 'logo.png']
+            filter_str = (
+                '[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,'
+                'pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,fps=30[main];'
+                f'[{logo1_input_index}:v]scale=-2:109[logo1];'
+                '[main][logo1]overlay=50:50[v]'
+            )
+        elif has_logo2:
+            logo_inputs = ['-i', 'logo2.png']
+            filter_str = (
+                '[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,'
+                'pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,fps=30[main];'
+                f'[{logo1_input_index}:v]scale=-2:70[logo2];'
+                '[main][logo2]overlay=main_w-overlay_w-50:50[v]'
+            )
         else:
+            logo_inputs = []
             filter_str = (
                 '[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,'
                 'pad=1920:1080:(oh-ih)/2:black,fps=30[v]'
             )
-            logo_input = []
 
         command = [
             'ffmpeg'
-        ] + input_args + logo_input + [
+        ] + input_args + logo_inputs + [
             '-filter_complex', filter_str,
             '-map', '[v]'
         ] + audio_map + [
