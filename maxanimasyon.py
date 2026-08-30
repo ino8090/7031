@@ -220,15 +220,16 @@ def start_m3u_stream():
         logo_inputs = []
         
         # Filtre zinciri senaryoları
+        # Sağ üstteki logo2'nin yüksekliği 50px olarak küçültüldü (`scale=-2:50`)
         if has_logo1 and has_logo2:
             logo_inputs = ['-i', 'logo.png', '-i', 'logo2.png']
             filter_str = (
                 '[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,'
                 'pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,fps=30[main];'
                 f'[{logo1_input_index}:v]scale=-2:109[logo1];'
-                f'[{logo2_input_index}:v]scale=-2:109[logo2];'
+                f'[{logo2_input_index}:v]scale=-2:50[logo2];'
                 '[main][logo1]overlay=50:50[tmp];'
-                '[tmp][logo2]overlay=main_w-overlay_w-50:50[v]'
+                '[tmp][logo2]overlay=main_w-overlay_w-40:40[v]'
             )
         elif has_logo1:
             logo_inputs = ['-i', 'logo.png']
@@ -250,7 +251,7 @@ def start_m3u_stream():
             logo_inputs = []
             filter_str = (
                 '[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,'
-                'pad=1920:1080:(oh-ih)/2:black,fps=30[v]'
+                'pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,fps=30[v]'
             )
 
         command = [
