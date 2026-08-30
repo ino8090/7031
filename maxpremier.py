@@ -235,16 +235,16 @@ def start_m3u_stream():
             filter_str = (
                 '[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,'
                 'pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,fps=30[main];'
-                f'[{logo1_input_index}:v]scale=-2:60[logo1];'
-                '[main][logo1]overlay=40:40[v]'
+                f'[{logo1_input_index}:v]scale=-2:79[logo1];'
+                '[main][logo1]overlay=50:50[v]'
             )
         elif has_logo2:
             logo_inputs = ['-i', 'logo2.png']
             filter_str = (
                 '[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,'
                 'pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,fps=30[main];'
-                f'[{logo2_input_index}:v]scale=-2:60[logo2];'
-                '[main][logo2]overlay=main_w-overlay_w-40:40[v]'
+                f'[{logo2_input_index}:v]scale=-2:30[logo2];'
+                '[main][logo2]overlay=main_w-overlay_w-49:49[v]'
             )
         else:
             logo_inputs = []
