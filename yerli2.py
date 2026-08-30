@@ -237,7 +237,7 @@ def start_m3u_stream():
             flag_idx = next_input_index
             overlay_inputs.extend(['-i', 'flag.png'])
             next_input_index += 1
-            filter_steps.append(f'[{flag_idx}:v]scale=50:-2[flag]')
+            filter_steps.append(f'[{flag_idx}:v]scale=60:-2[flag]')
             # Sağ üst köşe overlay formülü: main_w - overlay_w - 50 (Sağ kenardan 50px, üst kenardan 50px boşluk)
             filter_steps.append(f'{last_stream}[flag]overlay=main_w-overlay_w-60:60[v_flag]')
             last_stream = '[v_flag]'
