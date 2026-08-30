@@ -227,9 +227,9 @@ def start_m3u_stream():
                 '[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,'
                 'pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,fps=30[main];'
                 f'[{logo1_input_index}:v]scale=-2:109[logo1];'
-                f'[{logo2_input_index}:v]scale=-2:50[logo2];'
+                f'[{logo2_input_index}:v]scale=-2:30[logo2];'
                 '[main][logo1]overlay=50:50[tmp];'
-                '[tmp][logo2]overlay=main_w-overlay_w-40:40[v]'
+                '[tmp][logo2]overlay=main_w-overlay_w-59:59[v]'
             )
         elif has_logo1:
             logo_inputs = ['-i', 'logo.png']
