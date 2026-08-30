@@ -89,7 +89,7 @@ def get_m3u_playlist(m3u_url):
 def download_logo():
     headers = {'User-Agent': STREAM_USER_AGENT}
     
-    # 1. Logo İndir
+    # 1. Logo İndir (Sol Üst)
     try:
         response = requests.get(LOGO_URL, headers=headers, timeout=15)
         if response.status_code == 200 and len(response.content) > 0:
@@ -99,7 +99,7 @@ def download_logo():
     except Exception as e:
         print(f"⚠️ 1. Logo indirme hatası: {e}")
 
-    # 2. Logo İndir
+    # 2. Logo İndir (Sağ Üst)
     try:
         response2 = requests.get(LOGO2_URL, headers=headers, timeout=15)
         if response2.status_code == 200 and len(response2.content) > 0:
@@ -219,38 +219,38 @@ def start_m3u_stream():
 
         logo_inputs = []
         
-        # Filtre zinciri senaryoları
+        # Filtre zinciri: Her iki logo için de height=60px ölçeklendirme yapıldı
         if has_logo1 and has_logo2:
             logo_inputs = ['-i', 'logo.png', '-i', 'logo2.png']
             filter_str = (
                 '[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,'
                 'pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,fps=30[main];'
-                f'[{logo1_input_index}:v]scale=-2:109[logo1];'
-                f'[{logo2_input_index}:v]scale=-2:109[logo2];'
-                '[main][logo1]overlay=50:50[tmp];'
-                '[tmp][logo2]overlay=main_w-overlay_w-50:50[v]'
+                f'[{logo1_input_index}:v]scale=-2:60[logo1];'
+                f'[{logo2_input_index}:v]scale=-2:60[logo2];'
+                '[main][logo1]overlay=40:40[tmp];'
+                '[tmp][logo2]overlay=main_w-overlay_w-40:40[v]'
             )
         elif has_logo1:
             logo_inputs = ['-i', 'logo.png']
             filter_str = (
                 '[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,'
                 'pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,fps=30[main];'
-                f'[{logo1_input_index}:v]scale=-2:70[logo1];'
-                '[main][logo1]overlay=55:55[v]'
+                f'[{logo1_input_index}:v]scale=-2:60[logo1];'
+                '[main][logo1]overlay=40:40[v]'
             )
         elif has_logo2:
             logo_inputs = ['-i', 'logo2.png']
             filter_str = (
                 '[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,'
                 'pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,fps=30[main];'
-                f'[{logo1_input_index}:v]scale=-2:39[logo2];'
-                '[main][logo2]overlay=main_w-overlay_w-50:50[v]'
+                f'[{logo2_input_index}:v]scale=-2:60[logo2];'
+                '[main][logo2]overlay=main_w-overlay_w-40:40[v]'
             )
         else:
             logo_inputs = []
             filter_str = (
                 '[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,'
-                'pad=1920:1080:(oh-ih)/2:black,fps=30[v]'
+                'pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,fps=30[v]'
             )
 
         command = [
