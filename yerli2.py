@@ -16,7 +16,7 @@ RTMP_SERVER = f"{RTMP_URL}/{STREAM_KEY}"
 
 M3U_URL = os.getenv("M3U_URL", "https://raw.githubusercontent.com/ino8090/0101/refs/heads/main/yerli2.m3u")
 LOGO_URL = os.getenv("LOGO_URL", "https://raw.githubusercontent.com/ino8090/0101/refs/heads/main/1787745128505.png")
-FLAG_URL = os.getenv("FLAG_URL", "https://raw.githubusercontent.com/ino8090/0101/refs/heads/main/1788077450333.png")
+FLAG_URL = os.getenv("FLAG_URL", "https://raw.githubusercontent.com/ino8090/0101/refs/heads/main/file_00000000eae88246b13a221f896ea385.png")
 
 STATE_FILE_NAME = os.getenv("STATE_FILE_NAME", "state_maxyerli.json")
 GITHUB_STEP_SUMMARY = os.getenv("GITHUB_STEP_SUMMARY")
@@ -237,9 +237,9 @@ def start_m3u_stream():
             flag_idx = next_input_index
             overlay_inputs.extend(['-i', 'flag.png'])
             next_input_index += 1
-            filter_steps.append(f'[{flag_idx}:v]scale=100:-2[flag]')
+            filter_steps.append(f'[{flag_idx}:v]scale=30:-2[flag]')
             # Sağ üst köşe overlay formülü: main_w - overlay_w - 50 (Sağ kenardan 50px, üst kenardan 50px boşluk)
-            filter_steps.append(f'{last_stream}[flag]overlay=main_w-overlay_w-50:50[v_flag]')
+            filter_steps.append(f'{last_stream}[flag]overlay=main_w-overlay_w-60:60[v_flag]')
             last_stream = '[v_flag]'
 
         # Son filtre çıktısını [v] adıyla tanımlama
