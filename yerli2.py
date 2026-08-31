@@ -33,15 +33,6 @@ def format_hms(total_seconds):
     return f"{hrs:02d}:{mins:02d}:{secs:02d}"
 
 
-def escape_drawtext(text):
-    """FFmpeg drawtext filtresi için metindeki özel karakterleri temizler."""
-    text = text.replace('\\', '\\\\')
-    text = text.replace("'", "'\\\\''")
-    text = text.replace(':', '\\:')
-    text = text.replace('%', '\\%')
-    return text
-
-
 def get_local_state():
     """Yerel state_maxyerli.json dosyasından son durumu okur."""
     if os.path.exists(STATE_FILE_NAME):
@@ -247,26 +238,9 @@ def start_m3u_stream():
             overlay_inputs.extend(['-i', 'flag.png'])
             next_input_index += 1
             filter_steps.append(f'[{flag_idx}:v]scale=60:-2[flag]')
-            # Sağ üst köşe overlay formülü: main_w - overlay_w - 60
+            # Sağ üst köşe overlay formülü: main_w - overlay_w - 50 (Sağ kenardan 50px, üst kenardan 50px boşluk)
             filter_steps.append(f'{last_stream}[flag]overlay=main_w-overlay_w-60:60[v_flag]')
             last_stream = '[v_flag]'
-
-        # Sağ Alt Köşe: Şeffaf Arka Planlı Film Adı (drawtext)
-        safe_title = escape_drawtext(film_title)
-        drawtext_filter = (
-            f"{last_stream}drawtext="
-            f"text='{safe_title}':"
-            "fontsize=18:"
-            "fontcolor=white:"
-            "box=0:"
-            "shadowcolor=black@0.9:"
-            "shadowx=2:"
-            "shadowy=2:"
-            "x=w-tw-40:"
-            "y=h-th-40[v_title]"
-        )
-        filter_steps.append(drawtext_filter)
-        last_stream = '[v_title]'
 
         # Son filtre çıktısını [v] adıyla tanımlama
         filter_str = ";".join(filter_steps)
