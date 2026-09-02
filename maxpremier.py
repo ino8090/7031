@@ -172,7 +172,11 @@ def start_m3u_stream():
 
         headers_arg = f"User-Agent: {STREAM_USER_AGENT}\r\n"
 
-        # --- ÇİFT LİNK (VIDEO + SES SEPARATÖRÜ: ;) VE TEK LİNK KONTROLÜ ---
+        input_args = []
+        audio_map = []
+        input_count = 0
+
+        # --- ÇİFT LİNK KONTROLÜ ---
         if ";" in target_stream_url:
             video_url, audio_url = target_stream_url.split(";", 1)
             video_url = video_url.strip()
@@ -181,7 +185,7 @@ def start_m3u_stream():
             print(f"🎥 Video Bağlantısı : {video_url}")
             print(f"🔊 Ses Bağlantısı   : {audio_url}")
 
-            input_args = [
+            input_args.extend([
                 '-headers', headers_arg,
                 '-reconnect', '1', '-reconnect_streamed', '1', '-reconnect_delay_max', '5',
                 '-ss', str(last_seconds),
@@ -192,22 +196,20 @@ def start_m3u_stream():
                 '-ss', str(last_seconds),
                 '-re',
                 '-i', audio_url
-            ]
+            ])
             audio_map = ['-map', '1:a:0']
-            logo1_input_index = 2
-            logo2_input_index = 3
+            input_count = 2
         else:
             print(f"📡 Kaynak Yayın     : {target_stream_url}")
-            input_args = [
+            input_args.extend([
                 '-headers', headers_arg,
                 '-reconnect', '1', '-reconnect_streamed', '1', '-reconnect_delay_max', '5',
                 '-ss', str(last_seconds),
                 '-re',
                 '-i', target_stream_url
-            ]
+            ])
             audio_map = ['-map', '0:a?']
-            logo1_input_index = 1
-            logo2_input_index = 2
+            input_count = 1
 
         print("=" * 60)
 
@@ -218,41 +220,49 @@ def start_m3u_stream():
         has_logo2 = os.path.exists('logo2.png') and os.path.getsize('logo2.png') > 0
 
         logo_inputs = []
-        
-        # Filtre zinciri:
-        # Sol üst logo: yükseklik 80px (scale=-2:80), overlay=50:50
-        # Sağ üst logo: yükseklik 30px (scale=-2:30), overlay=main_w-overlay_w-50:50
+        filter_str = ""
+
+        # Dinamik İndeksleme Mantığı (0 veya 0 ve 1 medya için ayrıldı)
+        current_logo_idx = input_count
+
         if has_logo1 and has_logo2:
             logo_inputs = ['-i', 'logo.png', '-i', 'logo2.png']
+            logo1_idx = current_logo_idx
+            logo2_idx = current_logo_idx + 1
+
             filter_str = (
                 '[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,'
                 'pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,fps=30[main];'
-                f'[{logo1_input_index}:v]scale=-2:80[logo1];'
-                f'[{logo2_input_index}:v]scale=-2:20[logo2];'
+                f'[{logo1_idx}:v]scale=-2:80[logo1];'
+                f'[{logo2_idx}:v]scale=-2:20[logo2];'
                 '[main][logo1]overlay=50:50[tmp];'
                 '[tmp][logo2]overlay=main_w-overlay_w-50:50[v]'
             )
         elif has_logo1:
             logo_inputs = ['-i', 'logo.png']
+            logo1_idx = current_logo_idx
+
             filter_str = (
                 '[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,'
                 'pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,fps=30[main];'
-                f'[{logo1_input_index}:v]scale=-2:80[logo1];'
+                f'[{logo1_idx}:v]scale=-2:80[logo1];'
                 '[main][logo1]overlay=50:50[v]'
             )
         elif has_logo2:
             logo_inputs = ['-i', 'logo2.png']
+            logo2_idx = current_logo_idx
+
             filter_str = (
                 '[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,'
                 'pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,fps=30[main];'
-                f'[{logo2_input_index}:v]scale=-2:20[logo2];'
+                f'[{logo2_idx}:v]scale=-2:20[logo2];'
                 '[main][logo2]overlay=main_w-overlay_w-50:50[v]'
             )
         else:
             logo_inputs = []
             filter_str = (
                 '[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,'
-                'pad=1920:1080:(oh-ih)/2:black,fps=30[v]'
+                'pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,fps=30[v]'
             )
 
         command = [
