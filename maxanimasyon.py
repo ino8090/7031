@@ -11,14 +11,13 @@ import requests
 
 # ===================== AYARLAR =====================
 RTMP_URL = "rtmp://ssh101.bozztv.com:1935/ssh101"
-STREAM_KEY = os.getenv("STREAM_KEY") or "maxnimasyon"
+STREAM_KEY = os.getenv("STREAM_KEY") or "fixtv"
 RTMP_SERVER = f"{RTMP_URL}/{STREAM_KEY}"
 
-M3U_URL = os.getenv("M3U_URL") or "https://raw.githubusercontent.com/ino8090/0101/refs/heads/main/Maxç.m3u"
-LOGO_URL = os.getenv("LOGO_URL") or "https://raw.githubusercontent.com/ino8090/0101/refs/heads/main/1787712844266.png"
-LOGO2_URL = os.getenv("LOGO2_URL") or "https://raw.githubusercontent.com/ino8090/0101/refs/heads/main/file_00000000eae88246b13a221f896ea385.png"
+M3U_URL = os.getenv("M3U_URL") or "https://raw.githubusercontent.com/ino8090/0101/refs/heads/main/yerli.m3u"
+LOGO_URL = os.getenv("LOGO_URL") or "https://raw.githubusercontent.com/ino8090/0101/refs/heads/main/1788318046234.png"
 
-STATE_FILE_NAME = os.getenv("STATE_FILE_NAME", "state_maxanimasyon.json")
+STATE_FILE_NAME = os.getenv("STATE_FILE_NAME", "fixtv.json")
 GITHUB_STEP_SUMMARY = os.getenv("GITHUB_STEP_SUMMARY")
 
 STREAM_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -99,15 +98,14 @@ def download_logo():
     except Exception as e:
         print(f"⚠️ 1. Logo indirme hatası: {e}")
 
-    # 2. Logo İndir
+
+def write_title_file(title):
+    """Şu an oynayan içeriğin adını, drawtext filtresinin okuyacağı dosyaya yazar."""
     try:
-        response2 = requests.get(LOGO2_URL, headers=headers, timeout=15)
-        if response2.status_code == 200 and len(response2.content) > 0:
-            with open('logo2.png', 'wb') as f:
-                f.write(response2.content)
-            print("✅ 2. Logo başarıyla indirildi.")
+        with open('title.txt', 'w', encoding='utf-8') as f:
+            f.write(title)
     except Exception as e:
-        print(f"⚠️ 2. Logo indirme hatası: {e}")
+        print(f"⚠️ Başlık dosyası yazma hatası: {e}")
 
 
 def print_dashboard(title, index, playlist_len, seconds, status="🟢 Yayında"):
@@ -142,7 +140,6 @@ def write_step_summary(title, index, playlist_len, seconds, status="🟢 Yayınd
 def start_m3u_stream():
     print(f"🔧 Kullanılan M3U   : {M3U_URL}")
     print(f"🔧 Kullanılan Logo 1: {LOGO_URL}")
-    print(f"🔧 Kullanılan Logo 2: {LOGO2_URL}")
     print(f"🔧 State dosyası    : {STATE_FILE_NAME}")
     print(f"🔧 RTMP hedefi      : {RTMP_SERVER}")
 
@@ -163,6 +160,8 @@ def start_m3u_stream():
         current_item = playlist[current_index]
         target_stream_url = current_item["url"]
         film_title = current_item["title"]
+
+        write_title_file(film_title)
 
         print("=" * 60)
         print("📺 Maxanimasyon Canlı Aktarım Yayını (1080p 30fps - 2000k) Başlatılıyor")
@@ -215,43 +214,29 @@ def start_m3u_stream():
         write_step_summary(film_title, current_index, len(playlist), last_seconds, status="🟡 Başlatılıyor")
 
         has_logo1 = os.path.exists('logo.png') and os.path.getsize('logo.png') > 0
-        has_logo2 = os.path.exists('logo2.png') and os.path.getsize('logo2.png') > 0
 
-        logo_inputs = []
-        
-        # Filtre zinciri senaryoları
-        # Sağ üstteki logo2'nin yüksekliği 50px olarak küçültüldü (`scale=-2:50`)
-        if has_logo1 and has_logo2:
-            logo_inputs = ['-i', 'logo.png', '-i', 'logo2.png']
-            filter_str = (
-                '[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,'
-                'pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,fps=30[main];'
-                f'[{logo1_input_index}:v]scale=-2:109[logo1];'
-                f'[{logo2_input_index}:v]scale=-2:30[logo2];'
-                '[main][logo1]overlay=50:50[tmp];'
-                '[tmp][logo2]overlay=main_w-overlay_w-59:59[v]'
-            )
-        elif has_logo1:
+        # Sağ üstteki logo kaldırıldı; soldaki logo artık sağ üst köşeye taşındı.
+        # Film adı, sol alt köşede yarı saydam kutu içinde gösteriliyor.
+        title_drawtext = (
+            "drawtext=textfile='title.txt':reload=1:fontcolor=white:fontsize=36:"
+            "x=50:y=main_h-th-50:box=1:boxcolor=black@0.5:boxborderw=10"
+        )
+
+        if has_logo1:
             logo_inputs = ['-i', 'logo.png']
             filter_str = (
                 '[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,'
                 'pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,fps=30[main];'
                 f'[{logo1_input_index}:v]scale=-2:109[logo1];'
-                '[main][logo1]overlay=50:50[v]'
-            )
-        elif has_logo2:
-            logo_inputs = ['-i', 'logo2.png']
-            filter_str = (
-                '[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,'
-                'pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,fps=30[main];'
-                f'[{logo1_input_index}:v]scale=-2:30[logo2];'
-                '[main][logo2]overlay=main_w-overlay_w-59:59[v]'
+                '[main][logo1]overlay=main_w-overlay_w-59:59[tmp];'
+                f'[tmp]{title_drawtext}[v]'
             )
         else:
             logo_inputs = []
             filter_str = (
                 '[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,'
-                'pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,fps=30[v]'
+                'pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,fps=30[main];'
+                f'[main]{title_drawtext}[v]'
             )
 
         command = [
