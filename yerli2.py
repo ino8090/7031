@@ -1,3 +1,5 @@
+Obs olmadan 
+
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
@@ -22,10 +24,6 @@ STATE_FILE_NAME = os.getenv("STATE_FILE_NAME", "state_maxyerli.json")
 GITHUB_STEP_SUMMARY = os.getenv("GITHUB_STEP_SUMMARY")
 
 STREAM_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-
-# KALİTE AYARI: (CRF Değeri)
-# 18-23 arası önerilir. Sayı küçüldükçe kalite artar, sayı büyüdükçe dosya boyutu/bitrate düşer.
-CRF_VALUE = os.getenv("CRF_VALUE", "18")
 
 
 def format_hms(total_seconds):
@@ -170,7 +168,7 @@ def start_m3u_stream():
         film_title = current_item["title"]
 
         print("=" * 60)
-        print(f"📺 Maxyerli Canlı Aktarım Yayını (1080p 30fps - Kalite/CRF: {CRF_VALUE}) Başlatılıyor")
+        print("📺 Maxyerli Canlı Aktarım Yayını (1080p 30fps - 2000k) Başlatılıyor")
         print(f"🎬 Oynatılan İçerik  : {film_title}")
         print(f"⏱️ Başlangıç Saniyesi: {last_seconds}")
         print(f"🚀 Hedef RTMP       : {RTMP_SERVER}")
@@ -242,6 +240,7 @@ def start_m3u_stream():
             overlay_inputs.extend(['-i', 'flag.png'])
             next_input_index += 1
             filter_steps.append(f'[{flag_idx}:v]scale=60:-2[flag]')
+            # Sağ üst köşe overlay formülü: main_w - overlay_w - 50 (Sağ kenardan 50px, üst kenardan 50px boşluk)
             filter_steps.append(f'{last_stream}[flag]overlay=main_w-overlay_w-60:60[v_flag]')
             last_stream = '[v_flag]'
 
@@ -250,7 +249,6 @@ def start_m3u_stream():
         if last_stream != '[v]':
             filter_str += f";{last_stream}null[v]"
 
-        # === KONTROL EDİLEN FFmpeg KOMUTLARI (KBPS KALDIRILDI, CRF VE FPS EKLENDİ) ===
         command = [
             'ffmpeg'
         ] + input_args + overlay_inputs + [
@@ -260,9 +258,11 @@ def start_m3u_stream():
             '-c:v', 'libx264',
             '-preset', 'veryfast',
             '-pix_fmt', 'yuv420p',
-            '-r', '30',                   # Sabit 30 FPS
-            '-crf', str(CRF_VALUE),       # Sabit Bitrate (kbps) yerine CRF Kalite Modu
-            '-g', '60',                   # 2 Saniyelik Keyframe Aralığı (30fps x 2)
+            '-r', '30',
+            '-b:v', '2000k',
+            '-maxrate', '2000k',
+            '-bufsize', '4000k',
+            '-g', '60',
             '-c:a', 'aac',
             '-b:a', '128k',
             '-ar', '44100',
@@ -270,7 +270,7 @@ def start_m3u_stream():
             RTMP_SERVER
         ]
 
-        print(f"▶ FFmpeg başlatıldı, 1080p 30fps @ CRF {CRF_VALUE} ile iletiliyor...")
+        print("▶ FFmpeg başlatıldı, 1080p 30fps @ 2000k yayın iletiliyor...")
 
         process = subprocess.Popen(
             command,
