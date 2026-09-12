@@ -170,7 +170,8 @@ def start_m3u_stream():
         print(f"⏱️ Başlangıç Saniyesi: {last_seconds}")
         print(f"🚀 Hedef RTMP       : {RTMP_SERVER}")
 
-        headers_arg = f"User-Agent: {STREAM_USER_AGENT}\r\n"
+        # DUZELTME: \r\n kaldırıldı. subprocess listesinde düz string verilmeli.
+        headers_arg = f"User-Agent: {STREAM_USER_AGENT}"
 
         input_args = []
         audio_map = []
@@ -186,15 +187,13 @@ def start_m3u_stream():
             print(f"🔊 Ses Bağlantısı   : {audio_url}")
 
             input_args.extend([
-                '-headers', headers_arg,
                 '-reconnect', '1', '-reconnect_streamed', '1', '-reconnect_delay_max', '5',
+                '-headers', headers_arg,
                 '-ss', str(last_seconds),
-                '-re',
                 '-i', video_url,
-                '-headers', headers_arg,
                 '-reconnect', '1', '-reconnect_streamed', '1', '-reconnect_delay_max', '5',
+                '-headers', headers_arg,
                 '-ss', str(last_seconds),
-                '-re',
                 '-i', audio_url
             ])
             audio_map = ['-map', '1:a:0']
@@ -202,10 +201,9 @@ def start_m3u_stream():
         else:
             print(f"📡 Kaynak Yayın     : {target_stream_url}")
             input_args.extend([
-                '-headers', headers_arg,
                 '-reconnect', '1', '-reconnect_streamed', '1', '-reconnect_delay_max', '5',
+                '-headers', headers_arg,
                 '-ss', str(last_seconds),
-                '-re',
                 '-i', target_stream_url
             ])
             audio_map = ['-map', '0:a?']
@@ -222,7 +220,6 @@ def start_m3u_stream():
         logo_inputs = []
         filter_str = ""
 
-        # Dinamik İndeksleme Mantığı (0 veya 0 ve 1 medya için ayrıldı)
         current_logo_idx = input_count
 
         if has_logo1 and has_logo2:
@@ -266,7 +263,8 @@ def start_m3u_stream():
             )
 
         command = [
-            'ffmpeg'
+            'ffmpeg',
+            '-hide_banner'
         ] + input_args + logo_inputs + [
             '-filter_complex', filter_str,
             '-map', '[v]'
