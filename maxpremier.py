@@ -18,7 +18,7 @@ M3U_URL = os.getenv("M3U_URL") or "https://raw.githubusercontent.com/ino8090/010
 LOGO_URL = os.getenv("LOGO_URL") or "https://raw.githubusercontent.com/ino8090/0101/refs/heads/main/1787671958979.png"
 LOGO2_URL = os.getenv("LOGO2_URL") or "https://raw.githubusercontent.com/ino8090/0101/refs/heads/main/file_00000000eae88246b13a221f896ea385.png"
 
-STATE_FILE_NAME = os.getenv("STATE_FILE_NAME", "state_maxpremier.json")
+STATE_FILE_NAME = os.getenv("STATE_FILE_NAME", "state_maxanimasyon.json")
 GITHUB_STEP_SUMMARY = os.getenv("GITHUB_STEP_SUMMARY")
 
 STREAM_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -34,7 +34,7 @@ def format_hms(total_seconds):
 
 
 def get_local_state():
-    """Yerel state_maxpremier.json dosyasından son durumu okur."""
+    """Yerel state_maxanimasyon.json dosyasından son durumu okur."""
     if os.path.exists(STATE_FILE_NAME):
         try:
             with open(STATE_FILE_NAME, "r", encoding="utf-8") as f:
@@ -51,7 +51,7 @@ def get_local_state():
 
 
 def update_local_state(index, seconds):
-    """Son konumu yerel state_maxpremier.json dosyasına kaydeder."""
+    """Son konumu yerel state_maxanimasyon.json dosyasına kaydeder."""
     try:
         data = {"last_index": int(index), "last_seconds": int(seconds)}
         with open(STATE_FILE_NAME, "w", encoding="utf-8") as f:
@@ -170,8 +170,7 @@ def start_m3u_stream():
         print(f"⏱️ Başlangıç Saniyesi: {last_seconds}")
         print(f"🚀 Hedef RTMP       : {RTMP_SERVER}")
 
-        # DUZELTME: Headers parametresi doğrudan tırnaklı string yapısına oturtuldu
-        headers_val = f"User-Agent: {STREAM_USER_AGENT}\r\n"
+        headers_arg = f"User-Agent: {STREAM_USER_AGENT}\r\n"
 
         input_args = []
         audio_map = []
@@ -187,13 +186,15 @@ def start_m3u_stream():
             print(f"🔊 Ses Bağlantısı   : {audio_url}")
 
             input_args.extend([
-                '-headers', headers_val,
+                '-headers', headers_arg,
                 '-reconnect', '1', '-reconnect_streamed', '1', '-reconnect_delay_max', '5',
                 '-ss', str(last_seconds),
+                '-re',
                 '-i', video_url,
-                '-headers', headers_val,
+                '-headers', headers_arg,
                 '-reconnect', '1', '-reconnect_streamed', '1', '-reconnect_delay_max', '5',
                 '-ss', str(last_seconds),
+                '-re',
                 '-i', audio_url
             ])
             audio_map = ['-map', '1:a:0']
@@ -201,9 +202,10 @@ def start_m3u_stream():
         else:
             print(f"📡 Kaynak Yayın     : {target_stream_url}")
             input_args.extend([
-                '-headers', headers_val,
+                '-headers', headers_arg,
                 '-reconnect', '1', '-reconnect_streamed', '1', '-reconnect_delay_max', '5',
                 '-ss', str(last_seconds),
+                '-re',
                 '-i', target_stream_url
             ])
             audio_map = ['-map', '0:a?']
@@ -220,6 +222,7 @@ def start_m3u_stream():
         logo_inputs = []
         filter_str = ""
 
+        # Dinamik İndeksleme Mantığı (0 veya 0 ve 1 medya için ayrıldı)
         current_logo_idx = input_count
 
         if has_logo1 and has_logo2:
@@ -263,9 +266,7 @@ def start_m3u_stream():
             )
 
         command = [
-            'ffmpeg',
-            '-loglevel', 'error',
-            '-hide_banner'
+            'ffmpeg'
         ] + input_args + logo_inputs + [
             '-filter_complex', filter_str,
             '-map', '[v]'
@@ -296,17 +297,11 @@ def start_m3u_stream():
         last_save_time = time.time()
         last_dashboard_time = time.time()
         current_stream_seconds = last_seconds
-        error_logs = []
 
         while True:
             line = process.stderr.readline()
             if not line and process.poll() is not None:
                 break
-
-            if line:
-                # time bilgisi dışındaki gerçek hata loglarını topla
-                if "time=" not in line:
-                    error_logs.append(line.strip())
 
             if "time=" in line:
                 time_match = re.search(r'time=(\d+):(\d+):(\d+\.\d+)', line)
@@ -334,11 +329,6 @@ def start_m3u_stream():
             update_local_state(current_index, 0)
         else:
             print(f"⚠️ Yayın koptu (Return Code: {process.returncode}). Aynı saniyeden tekrar denenecek.")
-            if error_logs:
-                print("❌ FFmpeg Hata Çıktısı:")
-                for log in error_logs[-5:]:  # Son 5 hatayı ekrana bas
-                    print(f"   > {log}")
-            
             write_step_summary(film_title, current_index, len(playlist), current_stream_seconds, status="🔴 Bağlantı koptu, tekrar denenecek")
             last_seconds = current_stream_seconds
             update_local_state(current_index, last_seconds)
