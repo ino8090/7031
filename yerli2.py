@@ -23,6 +23,11 @@ GITHUB_STEP_SUMMARY = os.getenv("GITHUB_STEP_SUMMARY")
 
 STREAM_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
+# Yeniden bağlanma ve hata toleransı
+MAX_FAIL_COUNT = 5          # Üst üste başarısız deneme limiti
+BASE_RETRY_WAIT = 5         # İlk bekleme süresi (sn)
+MAX_RETRY_WAIT = 60         # Maksimum bekleme süresi (sn)
+
 
 def format_hms(total_seconds):
     """Saniyeyi SS:DD:SS formatına çevirir."""
@@ -34,7 +39,7 @@ def format_hms(total_seconds):
 
 
 def get_local_state():
-    """Yerel state_maxyerli.json dosyasından son durumu okur."""
+    """Yerel state dosyasından son durumu okur."""
     if os.path.exists(STATE_FILE_NAME):
         try:
             with open(STATE_FILE_NAME, "r", encoding="utf-8") as f:
@@ -51,7 +56,7 @@ def get_local_state():
 
 
 def update_local_state(index, seconds):
-    """Son konumu yerel state_maxyerli.json dosyasına kaydeder."""
+    """Son konumu yerel state dosyasına kaydeder."""
     try:
         data = {"last_index": int(index), "last_seconds": int(seconds)}
         with open(STATE_FILE_NAME, "w", encoding="utf-8") as f:
@@ -89,7 +94,7 @@ def get_m3u_playlist(m3u_url):
 def download_assets():
     """Logo ve Türk Bayrağı görsellerini indirir."""
     headers = {'User-Agent': STREAM_USER_AGENT}
-    
+
     # Logo indirme
     try:
         res_logo = requests.get(LOGO_URL, headers=headers, timeout=15)
@@ -109,6 +114,21 @@ def download_assets():
             print("✅ Türk Bayrağı başarıyla indirildi.")
     except Exception as e:
         print(f"⚠️ Bayrak indirme hatası: {e}")
+
+
+def check_stream_alive(url, timeout=10):
+    """Kaynak URL'nin canlı olup olmadığını önceden test eder."""
+    try:
+        headers = {'User-Agent': STREAM_USER_AGENT}
+        # Bazı sunucular HEAD'e izin vermez, o yüzden stream=True ile GET dene
+        r = requests.get(url, headers=headers, timeout=timeout,
+                         stream=True, allow_redirects=True)
+        status_ok = r.status_code < 400
+        r.close()
+        return status_ok
+    except Exception as e:
+        print(f"⚠️ Kaynak testi hatası: {e}")
+        return False
 
 
 def print_dashboard(title, index, playlist_len, seconds, status="🟢 Yayında"):
@@ -150,10 +170,12 @@ def start_m3u_stream():
     download_assets()
 
     current_index, last_seconds = get_local_state()
+    fail_count = 0
 
     while True:
         playlist = get_m3u_playlist(M3U_URL)
         if not playlist:
+            print("⚠️ Playlist boş, 10 sn sonra tekrar denenecek...")
             time.sleep(10)
             continue
 
@@ -179,30 +201,63 @@ def start_m3u_stream():
             video_url = video_url.strip()
             audio_url = audio_url.strip()
 
-            print(f"🎥 Video Bağlantısı : {video_url}")
-            print(f"🔊 Ses Bağlantısı   : {audio_url}")
+            print(f"🎥 Video Bağlantısı : {video_url[:80]}...")
+            print(f"🔊 Ses Bağlantısı   : {audio_url[:80]}...")
+
+            # Kaynak canlılık kontrolü
+            if not check_stream_alive(video_url):
+                print("❌ Video kaynağı erişilemez durumda! Sıradaki içeriğe geçiliyor.")
+                write_step_summary(film_title, current_index, len(playlist),
+                                   last_seconds, status="🔴 Kaynak erişilemez")
+                current_index += 1
+                last_seconds = 0
+                update_local_state(current_index, 0)
+                fail_count = 0
+                time.sleep(3)
+                continue
 
             input_args = [
                 '-headers', headers_arg,
-                '-reconnect', '1', '-reconnect_streamed', '1', '-reconnect_delay_max', '5',
+                '-reconnect', '1',
+                '-reconnect_streamed', '1',
+                '-reconnect_delay_max', '10',
+                '-reconnect_at_eof', '1',
+                '-rw_timeout', '15000000',
                 '-ss', str(last_seconds),
-                '-re',
                 '-i', video_url,
                 '-headers', headers_arg,
-                '-reconnect', '1', '-reconnect_streamed', '1', '-reconnect_delay_max', '5',
+                '-reconnect', '1',
+                '-reconnect_streamed', '1',
+                '-reconnect_delay_max', '10',
+                '-reconnect_at_eof', '1',
+                '-rw_timeout', '15000000',
                 '-ss', str(last_seconds),
-                '-re',
                 '-i', audio_url
             ]
             audio_map = ['-map', '1:a:0']
             next_input_index = 2
         else:
-            print(f"📡 Kaynak Yayın     : {target_stream_url}")
+            print(f"📡 Kaynak Yayın     : {target_stream_url[:80]}...")
+
+            if not check_stream_alive(target_stream_url):
+                print("❌ Kaynak yayın erişilemez durumda! Sıradaki içeriğe geçiliyor.")
+                write_step_summary(film_title, current_index, len(playlist),
+                                   last_seconds, status="🔴 Kaynak erişilemez")
+                current_index += 1
+                last_seconds = 0
+                update_local_state(current_index, 0)
+                fail_count = 0
+                time.sleep(3)
+                continue
+
             input_args = [
                 '-headers', headers_arg,
-                '-reconnect', '1', '-reconnect_streamed', '1', '-reconnect_delay_max', '5',
+                '-reconnect', '1',
+                '-reconnect_streamed', '1',
+                '-reconnect_delay_max', '10',
+                '-reconnect_at_eof', '1',
+                '-rw_timeout', '15000000',
                 '-ss', str(last_seconds),
-                '-re',
                 '-i', target_stream_url
             ]
             audio_map = ['-map', '0:a?']
@@ -238,7 +293,6 @@ def start_m3u_stream():
             overlay_inputs.extend(['-i', 'flag.png'])
             next_input_index += 1
             filter_steps.append(f'[{flag_idx}:v]scale=60:-2[flag]')
-            # Sağ üst köşe overlay formülü: main_w - overlay_w - 50 (Sağ kenardan 50px, üst kenardan 50px boşluk)
             filter_steps.append(f'{last_stream}[flag]overlay=main_w-overlay_w-60:60[v_flag]')
             last_stream = '[v_flag]'
 
@@ -248,7 +302,9 @@ def start_m3u_stream():
             filter_str += f";{last_stream}null[v]"
 
         command = [
-            'ffmpeg'
+            'ffmpeg',
+            '-hide_banner',
+            '-loglevel', 'warning'      # Sadece uyarı/hata göster, bilgi spam'ini engelle
         ] + input_args + overlay_inputs + [
             '-filter_complex', filter_str,
             '-map', '[v]'
@@ -273,20 +329,40 @@ def start_m3u_stream():
         process = subprocess.Popen(
             command,
             stderr=subprocess.PIPE,
-            universal_newlines=True
+            stdout=subprocess.DEVNULL,
+            universal_newlines=True,
+            bufsize=1
         )
 
         last_save_time = time.time()
         last_dashboard_time = time.time()
         current_stream_seconds = last_seconds
+        error_lines = []
 
         while True:
             line = process.stderr.readline()
             if not line and process.poll() is not None:
                 break
+            if not line:
+                continue
 
-            if "time=" in line:
-                time_match = re.search(r'time=(\d+):(\d+):(\d+\.\d+)', line)
+            stripped = line.strip()
+
+            # Hata / uyarı satırlarını yakala ve yazdır
+            if any(k in stripped for k in (
+                "error", "Error", "ERROR", "failed", "Failed", "FAILED",
+                "Connection", "refused", "timeout", "Timed out",
+                "Unauthorized", "Forbidden", "403", "404", "401", "500",
+                "Server error", "Invalid", "cannot", "Cannot",
+                "No such", "not found", "Broken pipe"
+            )):
+                print(f"🛑 FFMPEG: {stripped}")
+                error_lines.append(stripped)
+                if len(error_lines) > 50:
+                    error_lines.pop(0)
+
+            if "time=" in stripped:
+                time_match = re.search(r'time=(\d+):(\d+):(\d+\.\d+)', stripped)
                 if time_match:
                     hrs, mins, secs = time_match.groups()
                     played_seconds = int(hrs) * 3600 + int(mins) * 60 + float(secs)
@@ -303,21 +379,48 @@ def start_m3u_stream():
                         write_step_summary(film_title, current_index, len(playlist), current_stream_seconds)
                         last_dashboard_time = now
 
-        if process.returncode == 0:
+        returncode = process.returncode
+
+        if returncode == 0:
             print("✅ İçerik bitti, sıradakine geçiliyor.")
-            write_step_summary(film_title, current_index, len(playlist), current_stream_seconds, status="✅ Bitti, sıradakine geçiliyor")
+            write_step_summary(film_title, current_index, len(playlist),
+                               current_stream_seconds, status="✅ Bitti, sıradakine geçiliyor")
             current_index += 1
             last_seconds = 0
             update_local_state(current_index, 0)
+            fail_count = 0
+            time.sleep(2)
         else:
-            print(f"⚠️ Yayın koptu (Return Code: {process.returncode}). Aynı saniyeden tekrar denenecek.")
-            write_step_summary(film_title, current_index, len(playlist), current_stream_seconds, status="🔴 Bağlantı koptu, tekrar denenecek")
-            last_seconds = current_stream_seconds
-            update_local_state(current_index, last_seconds)
+            fail_count += 1
+            print(f"⚠️ Yayın koptu (Return Code: {returncode}). Deneme: {fail_count}/{MAX_FAIL_COUNT}")
 
-        print("⚠️ 5 saniye sonra tekrar bağlanılıyor...")
-        time.sleep(5)
+            if error_lines:
+                print("🔎 Son FFmpeg hata satırları:")
+                for el in error_lines[-5:]:
+                    print(f"   » {el}")
+
+            write_step_summary(film_title, current_index, len(playlist),
+                               current_stream_seconds,
+                               status=f"🔴 Koptu (RC:{returncode}), deneme {fail_count}/{MAX_FAIL_COUNT}")
+
+            if fail_count >= MAX_FAIL_COUNT:
+                print(f"❌ {MAX_FAIL_COUNT} kez üst üste başarısız. Sıradaki içeriğe geçiliyor.")
+                current_index += 1
+                last_seconds = 0
+                update_local_state(current_index, 0)
+                fail_count = 0
+                time.sleep(3)
+            else:
+                last_seconds = current_stream_seconds
+                update_local_state(current_index, last_seconds)
+                wait = min(BASE_RETRY_WAIT * fail_count, MAX_RETRY_WAIT)
+                print(f"⚠️ {wait} saniye sonra tekrar bağlanılıyor...")
+                time.sleep(wait)
 
 
 if __name__ == "__main__":
-    start_m3u_stream()
+    try:
+        start_m3u_stream()
+    except KeyboardInterrupt:
+        print("\n⏹️ Kullanıcı tarafından durduruldu.")
+        sys.exit(0)
