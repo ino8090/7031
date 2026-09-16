@@ -1,4 +1,4 @@
-name: Maxyerli
+name: Maxyerliizle
 on:
   push:
     branches: [ main ]
@@ -47,8 +47,8 @@ jobs:
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-    - name: 🔁 6 Saat Süre Dolunca Otomatik Yeni Run Tetikle
-      if: failure() || success()
+    - name: 🔁 6 Saat Süre Dolunca veya İptal Edilince Otomatik Yeniden Tetikle
+      if: always()
       env:
         GH_TOKEN: ${{ secrets.GH_TOKEN }}
       run: |
