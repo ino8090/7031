@@ -173,6 +173,20 @@ def start_m3u_stream():
 
         headers_arg = f"User-Agent: {STREAM_USER_AGENT}\r\n"
 
+        # Sadece saniye 0'dan büyükse -ss parametresini ekle (Exit Code 8 çökmesini önler)
+        ss_arg = ['-ss', str(last_seconds)] if last_seconds > 0 else []
+
+        # Dayanıklı HTTP bağlantı argümanları
+        reconnect_args = [
+            '-headers', headers_arg,
+            '-reconnect', '1',
+            '-reconnect_streamed', '1',
+            '-reconnect_delay_max', '10',
+            '-reconnect_at_eof', '1',
+            '-analyzeduration', '10000000',
+            '-probesize', '10000000'
+        ]
+
         # --- ÇİFT LİNK VEYA TEK LİNK KONTROLÜ ---
         if ";" in target_stream_url:
             video_url, audio_url = target_stream_url.split(";", 1)
@@ -182,29 +196,13 @@ def start_m3u_stream():
             print(f"🎥 Video Bağlantısı : {video_url}")
             print(f"🔊 Ses Bağlantısı   : {audio_url}")
 
-            input_args = [
-                '-headers', headers_arg,
-                '-reconnect', '1', '-reconnect_streamed', '1', '-reconnect_delay_max', '5',
-                '-ss', str(last_seconds),
-                '-re',
-                '-i', video_url,
-                '-headers', headers_arg,
-                '-reconnect', '1', '-reconnect_streamed', '1', '-reconnect_delay_max', '5',
-                '-ss', str(last_seconds),
-                '-re',
-                '-i', audio_url
-            ]
+            input_args = reconnect_args + ss_arg + ['-re', '-i', video_url] + \
+                         reconnect_args + ss_arg + ['-re', '-i', audio_url]
             audio_map = ['-map', '1:a:0']
             next_input_index = 2
         else:
             print(f"📡 Kaynak Yayın     : {target_stream_url}")
-            input_args = [
-                '-headers', headers_arg,
-                '-reconnect', '1', '-reconnect_streamed', '1', '-reconnect_delay_max', '5',
-                '-ss', str(last_seconds),
-                '-re',
-                '-i', target_stream_url
-            ]
+            input_args = reconnect_args + ss_arg + ['-re', '-i', target_stream_url]
             audio_map = ['-map', '0:a?']
             next_input_index = 1
 
@@ -238,7 +236,6 @@ def start_m3u_stream():
             overlay_inputs.extend(['-i', 'flag.png'])
             next_input_index += 1
             filter_steps.append(f'[{flag_idx}:v]scale=60:-2[flag]')
-            # Sağ üst köşe overlay formülü: main_w - overlay_w - 50 (Sağ kenardan 50px, üst kenardan 50px boşluk)
             filter_steps.append(f'{last_stream}[flag]overlay=main_w-overlay_w-60:60[v_flag]')
             last_stream = '[v_flag]'
 
@@ -321,4 +318,3 @@ def start_m3u_stream():
 
 if __name__ == "__main__":
     start_m3u_stream()
-    
