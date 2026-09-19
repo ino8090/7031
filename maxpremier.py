@@ -18,7 +18,7 @@ M3U_URL = os.getenv("M3U_URL") or "https://raw.githubusercontent.com/ino8090/010
 LOGO_URL = os.getenv("LOGO_URL") or "https://raw.githubusercontent.com/ino8090/0101/refs/heads/main/1787671958979.png"
 LOGO2_URL = os.getenv("LOGO2_URL") or "https://raw.githubusercontent.com/ino8090/0101/refs/heads/main/file_00000000eae88246b13a221f896ea385.png"
 
-STATE_FILE_NAME = os.getenv("STATE_FILE_NAME", "state_maxanimasyon.json")
+STATE_FILE_NAME = os.getenv("STATE_FILE_NAME", "state_maxpremier.json")
 GITHUB_STEP_SUMMARY = os.getenv("GITHUB_STEP_SUMMARY")
 
 STREAM_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -34,7 +34,7 @@ def format_hms(total_seconds):
 
 
 def get_local_state():
-    """Yerel state_maxanimasyon.json dosyasından son durumu okur."""
+    """Yerel state dosyasından son durumu okur."""
     if os.path.exists(STATE_FILE_NAME):
         try:
             with open(STATE_FILE_NAME, "r", encoding="utf-8") as f:
@@ -51,7 +51,7 @@ def get_local_state():
 
 
 def update_local_state(index, seconds):
-    """Son konumu yerel state_maxanimasyon.json dosyasına kaydeder."""
+    """Son konumu yerel state dosyasını kaydeder."""
     try:
         data = {"last_index": int(index), "last_seconds": int(seconds)}
         with open(STATE_FILE_NAME, "w", encoding="utf-8") as f:
@@ -89,7 +89,7 @@ def get_m3u_playlist(m3u_url):
 def download_logo():
     headers = {'User-Agent': STREAM_USER_AGENT}
     
-    # 1. Logo İndir (Sol Üst)
+    # 1. Logo İndir
     try:
         response = requests.get(LOGO_URL, headers=headers, timeout=15)
         if response.status_code == 200 and len(response.content) > 0:
@@ -99,7 +99,7 @@ def download_logo():
     except Exception as e:
         print(f"⚠️ 1. Logo indirme hatası: {e}")
 
-    # 2. Logo İndir (Sağ Üst)
+    # 2. Logo İndir
     try:
         response2 = requests.get(LOGO2_URL, headers=headers, timeout=15)
         if response2.status_code == 200 and len(response2.content) > 0:
@@ -124,7 +124,7 @@ def write_step_summary(title, index, playlist_len, seconds, status="🟢 Yayınd
         return
     try:
         content = (
-            "## 📺 Canlı Yayın Durumu (Maxanimasyon)\n\n"
+            "## 📺 Canlı Yayın Durumu (Maxpremier)\n\n"
             "| Alan | Değer |\n"
             "|---|---|\n"
             f"| 🎬 Şu an oynayan içerik | {title} |\n"
@@ -165,7 +165,7 @@ def start_m3u_stream():
         film_title = current_item["title"]
 
         print("=" * 60)
-        print("📺 Maxanimasyon Canlı Aktarım Yayını (1080p 30fps - 2000k) Başlatılıyor")
+        print("📺 Maxpremier Canlı Aktarım Yayını (1080p 30fps - 2000k) Başlatılıyor")
         print(f"🎬 Oynatılan İçerik  : {film_title}")
         print(f"⏱️ Başlangıç Saniyesi: {last_seconds}")
         print(f"🚀 Hedef RTMP       : {RTMP_SERVER}")
@@ -187,14 +187,10 @@ def start_m3u_stream():
 
             input_args.extend([
                 '-headers', headers_arg,
-                '-reconnect', '1', '-reconnect_streamed', '1', '-reconnect_delay_max', '5',
-                '-ss', str(last_seconds),
-                '-re',
+                '-reconnect', '1', '-reconnect_streamed', '1', '-reconnect_delay_max', '5', '-reconnect_at_eof', '1',
                 '-i', video_url,
                 '-headers', headers_arg,
-                '-reconnect', '1', '-reconnect_streamed', '1', '-reconnect_delay_max', '5',
-                '-ss', str(last_seconds),
-                '-re',
+                '-reconnect', '1', '-reconnect_streamed', '1', '-reconnect_delay_max', '5', '-reconnect_at_eof', '1',
                 '-i', audio_url
             ])
             audio_map = ['-map', '1:a:0']
@@ -203,9 +199,7 @@ def start_m3u_stream():
             print(f"📡 Kaynak Yayın     : {target_stream_url}")
             input_args.extend([
                 '-headers', headers_arg,
-                '-reconnect', '1', '-reconnect_streamed', '1', '-reconnect_delay_max', '5',
-                '-ss', str(last_seconds),
-                '-re',
+                '-reconnect', '1', '-reconnect_streamed', '1', '-reconnect_delay_max', '5', '-reconnect_at_eof', '1',
                 '-i', target_stream_url
             ])
             audio_map = ['-map', '0:a?']
@@ -222,7 +216,6 @@ def start_m3u_stream():
         logo_inputs = []
         filter_str = ""
 
-        # Dinamik İndeksleme Mantığı (0 veya 0 ve 1 medya için ayrıldı)
         current_logo_idx = input_count
 
         if has_logo1 and has_logo2:
@@ -265,9 +258,12 @@ def start_m3u_stream():
                 'pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,fps=30[v]'
             )
 
+        # -ss parametresini inputlardan sonraya ekleyerek akış arama kilitlemesini önlüyoruz
+        ss_args = ['-ss', str(last_seconds)] if last_seconds > 0 else []
+
         command = [
             'ffmpeg'
-        ] + input_args + logo_inputs + [
+        ] + ss_args + input_args + logo_inputs + [
             '-filter_complex', filter_str,
             '-map', '[v]'
         ] + audio_map + [
