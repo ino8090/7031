@@ -1,8 +1,14 @@
 name: maxpremier
+
 on:
   push:
     branches: [ main ]
   workflow_dispatch:
+
+# Çift yayın çalışmasını engeller: Yeni push geldiğinde eski çalışan yayını otomatik durdurur.
+concurrency:
+  group: maxpremier-stream
+  cancel-in-progress: true
 
 jobs:
   yayin:
@@ -47,8 +53,9 @@ jobs:
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-    - name: 🔁 Süre Doldu veya İptal Edildi, Yeni Run'ı Tetikle
-      if: always()
+    - name: 🔁 Süre Doldu veya Hata Aldıysa Yeni Run'ı Tetikle
+      # 'always()' yerine bu kontrolü koyarak elle iptal edildiğinde (cancelled) yeni yayın tetiklenmesini önlüyoruz.
+      if: success() || failure()
       env:
         GH_TOKEN: ${{ secrets.GH_TOKEN }}
       run: |
