@@ -1,8 +1,14 @@
 name: Maxyerliizle
+
 on:
   push:
     branches: [ main ]
   workflow_dispatch:
+
+# Çift yayın çalışmasını engeller: Yeni push geldiğinde eski çalışan yayını otomatik durdurur.
+concurrency:
+  group: maxyerliizle-stream
+  cancel-in-progress: true
 
 jobs:
   yayin:
@@ -47,8 +53,11 @@ jobs:
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-    - name: 🔁 6 Saat Süre Dolunca veya İptal Edilince Otomatik Yeniden Tetikle
-      if: always()
+    - name: 🔁 Otomatik Yeniden Tetikle (Elle İptal veya Süre Dolması)
+      # Yalnızca olay bir 'push' DEĞİLSE veya iş iptal edilmemişse çalışır.
+      # Böylece siz elle Cancel yaptığınızda (workflow_dispatch kaynaklıysa) YENİSİ BAŞLAR,
+      # ama Kod Pushladığınızda eski iş iptal edilip ekstra 2. bir yayın tetiklemez!
+      if: always() && !(github.event_name == 'push' && cancelled())
       env:
         GH_TOKEN: ${{ secrets.GH_TOKEN }}
       run: |
