@@ -53,9 +53,10 @@ jobs:
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-    - name: 🔁 Süre Doldu veya Hata Aldıysa Yeni Run'ı Tetikle
-      # 'always()' yerine bu kontrolü koyarak elle iptal edildiğinde (cancelled) yeni yayın tetiklenmesini önlüyoruz.
-      if: success() || failure()
+    - name: 🔁 Otomatik Yeniden Tetikle (Elle İptal veya Süre Dolması)
+      # Kod Push yapıldığında eski yayın iptal edilince 2. yayın tetiklenmez.
+      # Ancak panellerden elle Cancel yaptığınızda otomatik yeni yayın başlar!
+      if: always() && !(github.event_name == 'push' && cancelled())
       env:
         GH_TOKEN: ${{ secrets.GH_TOKEN }}
       run: |
