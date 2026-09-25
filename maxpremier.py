@@ -139,6 +139,23 @@ def write_step_summary(title, index, playlist_len, seconds, status="🟢 Yayınd
         print(f"⚠️ Step summary yazma hatası: {e}")
 
 
+def build_input_flags(url, ss_seconds=0):
+    """Kopmaları ve donmaları önlemek için optimize edilmiş FFmpeg giriş bayrakları"""
+    flags = [
+        '-headers', f"User-Agent: {STREAM_USER_AGENT}\r\n",
+        '-reconnect', '1',
+        '-reconnect_streamed', '1',
+        '-reconnect_delay_max', '2',
+        '-rw_timeout', '10000000',  # 10 saniye boyunca veri gelmezse akışı zorla yeniden başlatır (mikrosaniye)
+        '-probesize', '10000000',     # Analiz tamponunu genişletir (10MB)
+        '-analyzeduration', '10000000' # 10s analiz süresi
+    ]
+    if ss_seconds > 0:
+        flags.extend(['-ss', str(ss_seconds)])
+    flags.extend(['-i', url])
+    return flags
+
+
 def start_m3u_stream():
     print(f"🔧 Kullanılan M3U   : {M3U_URL}")
     print(f"🔧 Kullanılan Logo 1: {LOGO_URL}")
@@ -170,8 +187,6 @@ def start_m3u_stream():
         print(f"⏱️ Başlangıç Saniyesi: {last_seconds}")
         print(f"🚀 Hedef RTMP       : {RTMP_SERVER}")
 
-        headers_arg = f"User-Agent: {STREAM_USER_AGENT}\r\n"
-
         input_args = []
         audio_map = []
         input_count = 0
@@ -185,23 +200,13 @@ def start_m3u_stream():
             print(f"🎥 Video Bağlantısı : {video_url}")
             print(f"🔊 Ses Bağlantısı   : {audio_url}")
 
-            input_args.extend([
-                '-headers', headers_arg,
-                '-reconnect', '1', '-reconnect_streamed', '1', '-reconnect_delay_max', '5', '-reconnect_at_eof', '1',
-                '-i', video_url,
-                '-headers', headers_arg,
-                '-reconnect', '1', '-reconnect_streamed', '1', '-reconnect_delay_max', '5', '-reconnect_at_eof', '1',
-                '-i', audio_url
-            ])
+            input_args.extend(build_input_flags(video_url, last_seconds))
+            input_args.extend(build_input_flags(audio_url, last_seconds))
             audio_map = ['-map', '1:a:0']
             input_count = 2
         else:
             print(f"📡 Kaynak Yayın     : {target_stream_url}")
-            input_args.extend([
-                '-headers', headers_arg,
-                '-reconnect', '1', '-reconnect_streamed', '1', '-reconnect_delay_max', '5', '-reconnect_at_eof', '1',
-                '-i', target_stream_url
-            ])
+            input_args.extend(build_input_flags(target_stream_url, last_seconds))
             audio_map = ['-map', '0:a?']
             input_count = 1
 
@@ -258,17 +263,15 @@ def start_m3u_stream():
                 'pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,fps=30[v]'
             )
 
-        # -ss parametresini inputlardan sonraya ekleyerek akış arama kilitlemesini önlüyoruz
-        ss_args = ['-ss', str(last_seconds)] if last_seconds > 0 else []
-
         command = [
             'ffmpeg'
-        ] + ss_args + input_args + logo_inputs + [
+        ] + input_args + logo_inputs + [
             '-filter_complex', filter_str,
             '-map', '[v]'
         ] + audio_map + [
             '-c:v', 'libx264',
             '-preset', 'veryfast',
+            '-tune', 'zerolatency', # Canlı akış gecikmesini düşürür ve takılmaları önler
             '-pix_fmt', 'yuv420p',
             '-r', '30',
             '-b:v', '2000k',
@@ -278,6 +281,7 @@ def start_m3u_stream():
             '-c:a', 'aac',
             '-b:a', '128k',
             '-ar', '44100',
+            '-max_muxing_queue_size', '1024', # Ses/Video senkronizasyon taşmalarını engeller
             '-f', 'flv',
             RTMP_SERVER
         ]
