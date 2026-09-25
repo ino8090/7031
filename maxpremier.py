@@ -139,21 +139,18 @@ def write_step_summary(title, index, playlist_len, seconds, status="🟢 Yayınd
         print(f"⚠️ Step summary yazma hatası: {e}")
 
 
-def build_input_flags(url, ss_seconds=0):
-    """Kopmaları ve donmaları önlemek için optimize edilmiş FFmpeg giriş bayrakları"""
-    flags = [
+def build_input_flags(url):
+    """Canlı akış donmalarını önlemek için güvenli giriş parametreleri"""
+    return [
         '-headers', f"User-Agent: {STREAM_USER_AGENT}\r\n",
         '-reconnect', '1',
         '-reconnect_streamed', '1',
         '-reconnect_delay_max', '2',
-        '-rw_timeout', '10000000',  # 10 saniye boyunca veri gelmezse akışı zorla yeniden başlatır (mikrosaniye)
-        '-probesize', '10000000',     # Analiz tamponunu genişletir (10MB)
-        '-analyzeduration', '10000000' # 10s analiz süresi
+        '-rw_timeout', '10000000',      # 10s zamanaşımı
+        '-probesize', '10000000',
+        '-analyzeduration', '10000000',
+        '-i', url
     ]
-    if ss_seconds > 0:
-        flags.extend(['-ss', str(ss_seconds)])
-    flags.extend(['-i', url])
-    return flags
 
 
 def start_m3u_stream():
@@ -200,15 +197,22 @@ def start_m3u_stream():
             print(f"🎥 Video Bağlantısı : {video_url}")
             print(f"🔊 Ses Bağlantısı   : {audio_url}")
 
-            input_args.extend(build_input_flags(video_url, last_seconds))
-            input_args.extend(build_input_flags(audio_url, last_seconds))
+            input_args.extend(build_input_flags(video_url))
+            input_args.extend(build_input_flags(audio_url))
             audio_map = ['-map', '1:a:0']
             input_count = 2
         else:
             print(f"📡 Kaynak Yayın     : {target_stream_url}")
-            input_args.extend(build_input_flags(target_stream_url, last_seconds))
+            input_args.extend(build_input_flags(target_stream_url))
             audio_map = ['-map', '0:a?']
             input_count = 1
+
+        # --- İLERİ SARMA (-ss) PARAMETRESİNİ ÇIKIS SEVİYESİNE (OUTPUT SEEKING) ALMA ---
+        ss_args = []
+        if last_seconds > 0:
+            # -ss parametresi -i öncesinde canlı akışı kilitliyordu. 
+            # Output seek olarak eklendiğinde akış canlı oynatılıp istenen saniyeden doğrudan çıkışa iletilir.
+            ss_args = ['-ss', str(last_seconds)]
 
         print("=" * 60)
 
@@ -265,13 +269,13 @@ def start_m3u_stream():
 
         command = [
             'ffmpeg'
-        ] + input_args + logo_inputs + [
+        ] + input_args + logo_inputs + ss_args + [
             '-filter_complex', filter_str,
             '-map', '[v]'
         ] + audio_map + [
             '-c:v', 'libx264',
             '-preset', 'veryfast',
-            '-tune', 'zerolatency', # Canlı akış gecikmesini düşürür ve takılmaları önler
+            '-tune', 'zerolatency',
             '-pix_fmt', 'yuv420p',
             '-r', '30',
             '-b:v', '2000k',
@@ -281,7 +285,7 @@ def start_m3u_stream():
             '-c:a', 'aac',
             '-b:a', '128k',
             '-ar', '44100',
-            '-max_muxing_queue_size', '1024', # Ses/Video senkronizasyon taşmalarını engeller
+            '-max_muxing_queue_size', '1024',
             '-f', 'flv',
             RTMP_SERVER
         ]
