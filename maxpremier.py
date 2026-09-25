@@ -139,20 +139,6 @@ def write_step_summary(title, index, playlist_len, seconds, status="🟢 Yayınd
         print(f"⚠️ Step summary yazma hatası: {e}")
 
 
-def build_input_flags(url):
-    """Canlı akış donmalarını önlemek için güvenli giriş parametreleri"""
-    return [
-        '-headers', f"User-Agent: {STREAM_USER_AGENT}\r\n",
-        '-reconnect', '1',
-        '-reconnect_streamed', '1',
-        '-reconnect_delay_max', '2',
-        '-rw_timeout', '10000000',      # 10s zamanaşımı
-        '-probesize', '10000000',
-        '-analyzeduration', '10000000',
-        '-i', url
-    ]
-
-
 def start_m3u_stream():
     print(f"🔧 Kullanılan M3U   : {M3U_URL}")
     print(f"🔧 Kullanılan Logo 1: {LOGO_URL}")
@@ -184,11 +170,23 @@ def start_m3u_stream():
         print(f"⏱️ Başlangıç Saniyesi: {last_seconds}")
         print(f"🚀 Hedef RTMP       : {RTMP_SERVER}")
 
-        input_args = []
-        audio_map = []
-        input_count = 0
+        headers_arg = f"User-Agent: {STREAM_USER_AGENT}\r\n"
 
-        # --- ÇİFT LİNK KONTROLÜ ---
+        # Sadece saniye 0'dan büyükse -ss parametresini ekle
+        ss_arg = ['-ss', str(last_seconds)] if last_seconds > 0 else []
+
+        # İkinci koddaki sorunsuz çalışan bağlantı parametreleri
+        reconnect_args = [
+            '-headers', headers_arg,
+            '-reconnect', '1',
+            '-reconnect_streamed', '1',
+            '-reconnect_delay_max', '10',
+            '-reconnect_at_eof', '1',
+            '-analyzeduration', '10000000',
+            '-probesize', '10000000'
+        ]
+
+        # --- ÇİFT LİNK VEYA TEK LİNK KONTROLÜ ---
         if ";" in target_stream_url:
             video_url, audio_url = target_stream_url.split(";", 1)
             video_url = video_url.strip()
@@ -197,22 +195,15 @@ def start_m3u_stream():
             print(f"🎥 Video Bağlantısı : {video_url}")
             print(f"🔊 Ses Bağlantısı   : {audio_url}")
 
-            input_args.extend(build_input_flags(video_url))
-            input_args.extend(build_input_flags(audio_url))
+            input_args = reconnect_args + ss_arg + ['-re', '-i', video_url] + \
+                         reconnect_args + ss_arg + ['-re', '-i', audio_url]
             audio_map = ['-map', '1:a:0']
-            input_count = 2
+            next_input_index = 2
         else:
             print(f"📡 Kaynak Yayın     : {target_stream_url}")
-            input_args.extend(build_input_flags(target_stream_url))
+            input_args = reconnect_args + ss_arg + ['-re', '-i', target_stream_url]
             audio_map = ['-map', '0:a?']
-            input_count = 1
-
-        # --- İLERİ SARMA (-ss) PARAMETRESİNİ ÇIKIS SEVİYESİNE (OUTPUT SEEKING) ALMA ---
-        ss_args = []
-        if last_seconds > 0:
-            # -ss parametresi -i öncesinde canlı akışı kilitliyordu. 
-            # Output seek olarak eklendiğinde akış canlı oynatılıp istenen saniyeden doğrudan çıkışa iletilir.
-            ss_args = ['-ss', str(last_seconds)]
+            next_input_index = 1
 
         print("=" * 60)
 
@@ -225,7 +216,7 @@ def start_m3u_stream():
         logo_inputs = []
         filter_str = ""
 
-        current_logo_idx = input_count
+        current_logo_idx = next_input_index
 
         if has_logo1 and has_logo2:
             logo_inputs = ['-i', 'logo.png', '-i', 'logo2.png']
@@ -269,13 +260,12 @@ def start_m3u_stream():
 
         command = [
             'ffmpeg'
-        ] + input_args + logo_inputs + ss_args + [
+        ] + input_args + logo_inputs + [
             '-filter_complex', filter_str,
             '-map', '[v]'
         ] + audio_map + [
             '-c:v', 'libx264',
             '-preset', 'veryfast',
-            '-tune', 'zerolatency',
             '-pix_fmt', 'yuv420p',
             '-r', '30',
             '-b:v', '2000k',
@@ -285,7 +275,6 @@ def start_m3u_stream():
             '-c:a', 'aac',
             '-b:a', '128k',
             '-ar', '44100',
-            '-max_muxing_queue_size', '1024',
             '-f', 'flv',
             RTMP_SERVER
         ]
