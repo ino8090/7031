@@ -276,12 +276,12 @@ def start_m3u_stream():
                 f"%{{eif\\:{hh_expr}\\:d\\:2}}\\:%{{eif\\:{mm_expr}\\:d\\:2}}\\:%{{eif\\:{ss_expr}\\:d\\:2}}"
             )
             drawtext_remaining = (
-                f"drawtext=text='Kalan süre\\: {remaining_time_text}':fontcolor=white:fontsize=25:"
+                f"drawtext=text='\\: {remaining_time_text}':fontcolor=white:fontsize=25:"
                 f"borderw=2:bordercolor=black:x=30:y=h-th-30"
             )
         else:
             drawtext_remaining = (
-                f"drawtext=text='Kalan süre\\: Bilinmiyor':fontcolor=white:fontsize=25:"
+                f"drawtext=text='\\: Bilinmiyor':fontcolor=white:fontsize=25:"
                 f"borderw=2:bordercolor=black:x=30:y=h-th-30"
             )
 
