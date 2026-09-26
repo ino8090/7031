@@ -256,12 +256,12 @@ def start_m3u_stream():
 
         current_logo_idx = next_input_index
 
-        # --- SAĞ ALT: FİLM ADI / SOL ALT: (GERÇEK HESAPLANMIŞ) KALAN SÜRE İÇİN DRAWTEXT FİLTRELERİ ---
+        # --- SAĞ ALT: FİLM ADI / SOL ALT: (GERÇEK HESAPLANMIŞ) KALAN SÜRE İÇİN KALIN (BOLD) DRAWTEXT FİLTRELERİ ---
         escaped_title = escape_drawtext(film_title)
 
         drawtext_title = (
-            f"drawtext=text='{escaped_title}':fontcolor=white:fontsize=25:"
-            f"borderw=2:bordercolor=black:x=w-tw-30:y=h-th-30"
+            f"drawtext=text='{escaped_title}':font='DejaVu Sans':style=Bold:fontcolor=white:fontsize=28:"
+            f"borderw=3:bordercolor=black:x=w-tw-30:y=h-th-30"
         )
 
         # Kalan süre = (ffprobe ile tespit edilen GERÇEK toplam film süresi)
@@ -276,13 +276,13 @@ def start_m3u_stream():
                 f"%{{eif\\:{hh_expr}\\:d\\:2}}\\:%{{eif\\:{mm_expr}\\:d\\:2}}\\:%{{eif\\:{ss_expr}\\:d\\:2}}"
             )
             drawtext_remaining = (
-                f"drawtext=text='\\: {remaining_time_text}':fontcolor=white:fontsize=25:"
-                f"borderw=2:bordercolor=black:x=30:y=h-th-30"
+                f"drawtext=text='\\{remaining_time_text}':font='DejaVu Sans':style=Bold:fontcolor=white:fontsize=25:"
+                f"borderw=3:bordercolor=black:x=30:y=h-th-30"
             )
         else:
             drawtext_remaining = (
-                f"drawtext=text='\\: Bilinmiyor':fontcolor=white:fontsize=25:"
-                f"borderw=2:bordercolor=black:x=30:y=h-th-30"
+                f"drawtext=text='\\':font='DejaVu Sans':style=Bold:fontcolor=white:fontsize=25:"
+                f"borderw=3:bordercolor=black:x=30:y=h-th-30"
             )
 
         drawtext_chain = f"[vbase]{drawtext_title},{drawtext_remaining}[v]"
