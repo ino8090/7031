@@ -256,23 +256,17 @@ def start_m3u_stream():
 
         current_logo_idx = next_input_index
 
-        # --- SAĞ ALT: FİLM ADI / SOL ALT: KANAL SÜRESİ İÇİN DRAWTEXT FİLTRELERİ ---
+        # --- SAĞ ALT: FİLM ADI / SOL ALT: (GERÇEK HESAPLANMIŞ) KALAN SÜRE İÇİN DRAWTEXT FİLTRELERİ ---
         escaped_title = escape_drawtext(film_title)
-        # %{pts\:hms\:OFFSET} -> oynatma süresine, kaldığımız saniyeyi (last_seconds) ekleyerek
-        # sürekli artan bir sa:dk:sn sayacı üretir (kanal süresi).
-        time_expr = f"%{{pts\\:hms\\:{int(last_seconds)}}}"
 
         drawtext_title = (
             f"drawtext=text='{escaped_title}':fontcolor=white:fontsize=25:"
             f"borderw=2:bordercolor=black:x=w-tw-30:y=h-th-30"
         )
-        drawtext_time = (
-            f"drawtext=text='{time_expr}':fontcolor=white:fontsize=25:"
-            f"borderw=2:bordercolor=black:x=30:y=h-th-30"
-        )
 
-        # Sonraki filme kalan süre (bilinen süre - şimdiye kadar bu filmde geçen süre).
-        # Kanal-süre yazısının hemen üstünde, sol altta gösterilir.
+        # Kalan süre = (ffprobe ile tespit edilen GERÇEK toplam film süresi)
+        #              - (bu filmde şu ana kadar geçen gerçek süre: last_seconds + t)
+        # Saniyede bir otomatik güncellenir, statik değildir.
         if film_duration is not None:
             remaining_expr = f"({film_duration:.3f}-{int(last_seconds)}-t)"
             hh_expr = f"trunc({remaining_expr}/3600)"
@@ -282,12 +276,16 @@ def start_m3u_stream():
                 f"%{{eif\\:{hh_expr}\\:d\\:2}}\\:%{{eif\\:{mm_expr}\\:d\\:2}}\\:%{{eif\\:{ss_expr}\\:d\\:2}}"
             )
             drawtext_remaining = (
-                f"drawtext=text='Sonraki filme kalan\\: {remaining_time_text}':fontcolor=yellow:fontsize=22:"
-                f"borderw=2:bordercolor=black:x=30:y=h-th-70"
+                f"drawtext=text='Kalan süre\\: {remaining_time_text}':fontcolor=white:fontsize=25:"
+                f"borderw=2:bordercolor=black:x=30:y=h-th-30"
             )
-            drawtext_chain = f"[vbase]{drawtext_title},{drawtext_time},{drawtext_remaining}[v]"
         else:
-            drawtext_chain = f"[vbase]{drawtext_title},{drawtext_time}[v]"
+            drawtext_remaining = (
+                f"drawtext=text='Kalan süre\\: Bilinmiyor':fontcolor=white:fontsize=25:"
+                f"borderw=2:bordercolor=black:x=30:y=h-th-30"
+            )
+
+        drawtext_chain = f"[vbase]{drawtext_title},{drawtext_remaining}[v]"
 
         if has_logo1 and has_logo2:
             logo_inputs = ['-i', 'logo.png', '-i', 'logo2.png']
