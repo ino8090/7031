@@ -37,7 +37,7 @@ def sanitize_text(text):
     """FFmpeg drawtext filtresi için özel karakterleri temizler/kaçırır."""
     if not text:
         return ""
-    text = text.replace(":", "\\:").replace("'", "").replace('"', '')
+    text = text.replace("\\", "/").replace(":", "\\:").replace("'", "").replace('"', '')
     return text
 
 
@@ -255,16 +255,17 @@ def start_m3u_stream():
             logo_inputs = []
             logo_overlay_filter = '[main]null[v_base]'
 
-        # --- DRAWTEXT FİLTRELERİ (KALIN / BOLD METİN) ---
+        # --- DRAWTEXT FİLTRELERİ (DÜZELTİLMİŞ SÖZDİZİMİ) ---
         safe_film_title = sanitize_text(film_title)
+        init_sec = int(last_seconds)
 
-        # Sol Alt Köşe: Geçen Süre (Kalın Metin)
+        # Sol Alt Köşe: Geçen Süre
         time_text_filter = (
-            f"drawtext=text='%{{pts\\:hms\\:{last_seconds}}}':x=30:y=h-th-30:"
+            f"drawtext=text='%{{pts\\:hms\\:{init_sec}}}':x=30:y=h-th-30:"
             f"fontsize=25:fontcolor=white:bold=1:borderw=2:bordercolor=black"
         )
         
-        # Sağ Alt Köşe: Film / İçerik Adı (Kalın Metin)
+        # Sağ Alt Köşe: Film / İçerik Adı
         title_text_filter = (
             f"drawtext=text='{safe_film_title}':x=w-tw-30:y=h-th-30:"
             f"fontsize=25:fontcolor=white:bold=1:borderw=2:bordercolor=black"
