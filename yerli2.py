@@ -251,6 +251,7 @@ def start_m3u_stream():
 
         has_logo = os.path.exists('logo.png') and os.path.getsize('logo.png') > 0
         has_flag = os.path.exists('flag.png') and os.path.getsize('flag.png') > 0
+        has_flag = False  # Sağ üstteki logo (bayrak) kaldırıldı, ekrana eklenmiyor
 
         overlay_inputs = []
         filter_steps = [
@@ -281,7 +282,7 @@ def start_m3u_stream():
         escaped_title = escape_drawtext(film_title)
 
         drawtext_title = (
-            f"drawtext=text='{escaped_title}':fontfile='/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf':fontcolor=white:fontsize=20:"
+            f"drawtext=text='{escaped_title}':fontfile='/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf':fontcolor=white:fontsize=18:"
             f"borderw=2:bordercolor=black:x=w-tw-30:y=h-th-30"
         )
 
@@ -297,12 +298,12 @@ def start_m3u_stream():
                 f"%{{eif\\:{hh_expr}\\:d\\:2}}\\:%{{eif\\:{mm_expr}\\:d\\:2}}\\:%{{eif\\:{ss_expr}\\:d\\:2}}"
             )
             drawtext_remaining = (
-                f"drawtext=text='\\ {remaining_time_text}':fontfile='/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf':fontcolor=white:fontsize=20:"
+                f"drawtext=text='\\ {remaining_time_text}':fontfile='/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf':fontcolor=white:fontsize=19:"
                 f"borderw=2:bordercolor=black:x=30:y=h-th-30"
             )
         else:
             drawtext_remaining = (
-                f"drawtext=text='\\':fontfile='/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf':fontcolor=white:fontsize=20:"
+                f"drawtext=text='\\: Bilinmiyor':fontfile='/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf':fontcolor=white:fontsize=19:"
                 f"borderw=2:bordercolor=black:x=30:y=h-th-30"
             )
 
