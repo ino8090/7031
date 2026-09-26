@@ -24,6 +24,17 @@ GITHUB_STEP_SUMMARY = os.getenv("GITHUB_STEP_SUMMARY")
 STREAM_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
 
+def escape_ffmpeg_text(text):
+    """FFmpeg drawtext filtresinde hata çıkarmaması için özel karakterleri kaçırır."""
+    if not text:
+        return ""
+    text = text.replace("\\", "\\\\")
+    text = text.replace("'", "'\\\\''")
+    text = text.replace(":", "\\:")
+    text = text.replace("%", "\\%")
+    return text
+
+
 def format_hms(total_seconds):
     """Saniyeyi SS:DD:SS formatına çevirir."""
     total_seconds = int(total_seconds)
@@ -214,8 +225,6 @@ def start_m3u_stream():
         has_logo2 = os.path.exists('logo2.png') and os.path.getsize('logo2.png') > 0
 
         logo_inputs = []
-        filter_str = ""
-
         current_logo_idx = next_input_index
 
         if has_logo1 and has_logo2:
@@ -223,40 +232,54 @@ def start_m3u_stream():
             logo1_idx = current_logo_idx
             logo2_idx = current_logo_idx + 1
 
-            filter_str = (
+            overlay_filter = (
                 '[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,'
                 'pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,fps=30[main];'
                 f'[{logo1_idx}:v]scale=-2:80[logo1];'
                 f'[{logo2_idx}:v]scale=-2:20[logo2];'
                 '[main][logo1]overlay=50:50[tmp];'
-                '[tmp][logo2]overlay=main_w-overlay_w-50:50[v]'
+                '[tmp][logo2]overlay=main_w-overlay_w-50:50[v_logo]'
             )
         elif has_logo1:
             logo_inputs = ['-i', 'logo.png']
             logo1_idx = current_logo_idx
 
-            filter_str = (
+            overlay_filter = (
                 '[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,'
                 'pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,fps=30[main];'
                 f'[{logo1_idx}:v]scale=-2:80[logo1];'
-                '[main][logo1]overlay=50:50[v]'
+                '[main][logo1]overlay=50:50[v_logo]'
             )
         elif has_logo2:
             logo_inputs = ['-i', 'logo2.png']
             logo2_idx = current_logo_idx
 
-            filter_str = (
+            overlay_filter = (
                 '[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,'
                 'pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,fps=30[main];'
                 f'[{logo2_idx}:v]scale=-2:20[logo2];'
-                '[main][logo2]overlay=main_w-overlay_w-50:50[v]'
+                '[main][logo2]overlay=main_w-overlay_w-50:50[v_logo]'
             )
         else:
             logo_inputs = []
-            filter_str = (
+            overlay_filter = (
                 '[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,'
-                'pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,fps=30[v]'
+                'pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,fps=30[v_logo]'
             )
+
+        # Metin Filtreleri: Sol Alt (Süre/Kanal) ve Sağ Alt (Film Adı)
+        escaped_title = escape_ffmpeg_text(film_title)
+
+        drawtext_left = (
+            "drawtext=text='SURE\\: %{pts\\:hms}':fontcolor=white:fontsize=28:"
+            "box=1:boxcolor=black@0.6:boxborderw=8:x=50:y=main_h-th-50"
+        )
+        drawtext_right = (
+            f"drawtext=text='{escaped_title}':fontcolor=white:fontsize=28:"
+            "box=1:boxcolor=black@0.6:boxborderw=8:x=main_w-tw-50:y=main_h-th-50"
+        )
+
+        filter_str = f"{overlay_filter};[v_logo]{drawtext_left}[v_tmp];[v_tmp]{drawtext_right}[v]"
 
         command = [
             'ffmpeg'
