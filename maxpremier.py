@@ -44,6 +44,26 @@ def format_hms(total_seconds):
     return f"{hrs:02d}:{mins:02d}:{secs:02d}"
 
 
+def get_media_duration(url):
+    """ffprobe kullanarak medyanın toplam süresini saniye cinsinden alır."""
+    try:
+        cmd = [
+            'ffprobe',
+            '-headers', f'User-Agent: {STREAM_USER_AGENT}\r\n',
+            '-v', 'error',
+            '-show_entries', 'format=duration',
+            '-of', 'default=noprint_wrappers=1:nokey=1',
+            url
+        ]
+        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=15)
+        duration = float(result.stdout.strip())
+        if duration > 0:
+            return duration
+    except Exception as e:
+        print(f"⚠️ Toplam süre alınamadı: {e}")
+    return 7200  # Varsayılan olarak 2 saat (7200 sn) kabul edilir
+
+
 def get_local_state():
     """Yerel state dosyasından son durumu okur."""
     if os.path.exists(STATE_FILE_NAME):
@@ -181,12 +201,15 @@ def start_m3u_stream():
         print(f"⏱️ Başlangıç Saniyesi: {last_seconds}")
         print(f"🚀 Hedef RTMP       : {RTMP_SERVER}")
 
+        # Toplam süreyi al
+        probe_target = target_stream_url.split(";")[0].strip() if ";" in target_stream_url else target_stream_url
+        total_duration = get_media_duration(probe_target)
+        print(f"⏳ İçerik Toplam Süre: {format_hms(total_duration)}")
+
         headers_arg = f"User-Agent: {STREAM_USER_AGENT}\r\n"
 
-        # Sadece saniye 0'dan büyükse -ss parametresini ekle
         ss_arg = ['-ss', str(last_seconds)] if last_seconds > 0 else []
 
-        # İkinci koddaki sorunsuz çalışan bağlantı parametreleri
         reconnect_args = [
             '-headers', headers_arg,
             '-reconnect', '1',
@@ -267,16 +290,17 @@ def start_m3u_stream():
                 'pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,fps=30[v_logo]'
             )
 
-        # Metin Filtreleri: Sol Alt (Süre/Kanal) ve Sağ Alt (Film Adı)
+        # Metin Filtreleri (Arka plan saydamlığı kaldırılmış, doğrudan yazı)
         escaped_title = escape_ffmpeg_text(film_title)
+        total_start = total_duration - last_seconds
 
         drawtext_left = (
-            "drawtext=text='SURE\\: %{pts\\:hms}':fontcolor=white:fontsize=28:"
-            "box=1:boxcolor=black@0.6:boxborderw=8:x=50:y=main_h-th-50"
+            f"drawtext=text='KALAN\\: %{{eif\\:trunc(max(0\\,{total_start}-pts_time)/3600)\\:d\\:2}}\\:%{{eif\\:trunc(mod(max(0\\,{total_start}-pts_time)/60\\,60))\\:d\\:2}}\\:%{{eif\\:trunc(mod(max(0\\,{total_start}-pts_time)\\,60))\\:d\\:2}}':"
+            "fontcolor=white:fontsize=25:borderw=2:bordercolor=black:x=30:y=main_h-th-30"
         )
         drawtext_right = (
             f"drawtext=text='{escaped_title}':fontcolor=white:fontsize=28:"
-            "box=1:boxcolor=black@0.6:boxborderw=8:x=main_w-tw-50:y=main_h-th-50"
+            "borderw=2:bordercolor=black:x=main_w-tw-50:y=main_h-th-50"
         )
 
         filter_str = f"{overlay_filter};[v_logo]{drawtext_left}[v_tmp];[v_tmp]{drawtext_right}[v]"
