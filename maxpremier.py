@@ -24,17 +24,6 @@ GITHUB_STEP_SUMMARY = os.getenv("GITHUB_STEP_SUMMARY")
 STREAM_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
 
-def escape_ffmpeg_text(text):
-    """FFmpeg drawtext filtresinde hata çıkarmaması için özel karakterleri kaçırır."""
-    if not text:
-        return ""
-    text = text.replace("\\", "\\\\")
-    text = text.replace("'", "'\\\\''")
-    text = text.replace(":", "\\:")
-    text = text.replace("%", "\\%")
-    return text
-
-
 def format_hms(total_seconds):
     """Saniyeyi SS:DD:SS formatına çevirir."""
     total_seconds = int(total_seconds)
@@ -44,24 +33,15 @@ def format_hms(total_seconds):
     return f"{hrs:02d}:{mins:02d}:{secs:02d}"
 
 
-def get_media_duration(url):
-    """ffprobe kullanarak medyanın toplam süresini saniye cinsinden alır."""
-    try:
-        cmd = [
-            'ffprobe',
-            '-headers', f'User-Agent: {STREAM_USER_AGENT}\r\n',
-            '-v', 'error',
-            '-show_entries', 'format=duration',
-            '-of', 'default=noprint_wrappers=1:nokey=1',
-            url
-        ]
-        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=15)
-        duration = float(result.stdout.strip())
-        if duration > 0:
-            return duration
-    except Exception as e:
-        print(f"⚠️ Toplam süre alınamadı: {e}")
-    return 7200  # Varsayılan olarak 2 saat (7200 sn) kabul edilir
+def escape_drawtext(text):
+    """ffmpeg drawtext filtresi için metni güvenli hale getirir (\\, :, ', % karakterlerini escaper)."""
+    if not text:
+        return ""
+    text = text.replace('\\', '\\\\')
+    text = text.replace(':', '\\:')
+    text = text.replace("'", "\\'")
+    text = text.replace('%', '\\%')
+    return text
 
 
 def get_local_state():
@@ -201,15 +181,12 @@ def start_m3u_stream():
         print(f"⏱️ Başlangıç Saniyesi: {last_seconds}")
         print(f"🚀 Hedef RTMP       : {RTMP_SERVER}")
 
-        # Toplam süreyi al
-        probe_target = target_stream_url.split(";")[0].strip() if ";" in target_stream_url else target_stream_url
-        total_duration = get_media_duration(probe_target)
-        print(f"⏳ İçerik Toplam Süre: {format_hms(total_duration)}")
-
         headers_arg = f"User-Agent: {STREAM_USER_AGENT}\r\n"
 
+        # Sadece saniye 0'dan büyükse -ss parametresini ekle
         ss_arg = ['-ss', str(last_seconds)] if last_seconds > 0 else []
 
+        # İkinci koddaki sorunsuz çalışan bağlantı parametreleri
         reconnect_args = [
             '-headers', headers_arg,
             '-reconnect', '1',
@@ -248,62 +225,69 @@ def start_m3u_stream():
         has_logo2 = os.path.exists('logo2.png') and os.path.getsize('logo2.png') > 0
 
         logo_inputs = []
+        filter_str = ""
+
         current_logo_idx = next_input_index
+
+        # --- SAĞ ALT: FİLM ADI / SOL ALT: KANAL SÜRESİ İÇİN DRAWTEXT FİLTRELERİ ---
+        escaped_title = escape_drawtext(film_title)
+        # %{pts\:hms\:OFFSET} -> oynatma süresine, kaldığımız saniyeyi (last_seconds) ekleyerek
+        # sürekli artan bir sa:dk:sn sayacı üretir (kanal süresi).
+        time_expr = f"%{{pts\\:hms\\:{int(last_seconds)}}}"
+
+        drawtext_title = (
+            f"drawtext=text='{escaped_title}':fontcolor=white:fontsize=25:"
+            f"borderw=2:bordercolor=black:x=w-tw-30:y=h-th-30"
+        )
+        drawtext_time = (
+            f"drawtext=text='{time_expr}':fontcolor=white:fontsize=25:"
+            f"borderw=2:bordercolor=black:x=30:y=h-th-30"
+        )
+        drawtext_chain = f"[vbase]{drawtext_title},{drawtext_time}[v]"
 
         if has_logo1 and has_logo2:
             logo_inputs = ['-i', 'logo.png', '-i', 'logo2.png']
             logo1_idx = current_logo_idx
             logo2_idx = current_logo_idx + 1
 
-            overlay_filter = (
+            filter_str = (
                 '[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,'
                 'pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,fps=30[main];'
                 f'[{logo1_idx}:v]scale=-2:80[logo1];'
                 f'[{logo2_idx}:v]scale=-2:20[logo2];'
                 '[main][logo1]overlay=50:50[tmp];'
-                '[tmp][logo2]overlay=main_w-overlay_w-50:50[v_logo]'
+                '[tmp][logo2]overlay=main_w-overlay_w-50:50[vbase];'
+                f'{drawtext_chain}'
             )
         elif has_logo1:
             logo_inputs = ['-i', 'logo.png']
             logo1_idx = current_logo_idx
 
-            overlay_filter = (
+            filter_str = (
                 '[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,'
                 'pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,fps=30[main];'
                 f'[{logo1_idx}:v]scale=-2:80[logo1];'
-                '[main][logo1]overlay=50:50[v_logo]'
+                '[main][logo1]overlay=50:50[vbase];'
+                f'{drawtext_chain}'
             )
         elif has_logo2:
             logo_inputs = ['-i', 'logo2.png']
             logo2_idx = current_logo_idx
 
-            overlay_filter = (
+            filter_str = (
                 '[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,'
                 'pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,fps=30[main];'
                 f'[{logo2_idx}:v]scale=-2:20[logo2];'
-                '[main][logo2]overlay=main_w-overlay_w-50:50[v_logo]'
+                '[main][logo2]overlay=main_w-overlay_w-50:50[vbase];'
+                f'{drawtext_chain}'
             )
         else:
             logo_inputs = []
-            overlay_filter = (
+            filter_str = (
                 '[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,'
-                'pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,fps=30[v_logo]'
+                'pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,fps=30[vbase];'
+                f'{drawtext_chain}'
             )
-
-        # Metin Filtreleri (Arka plan saydamlığı kaldırılmış, doğrudan yazı)
-        escaped_title = escape_ffmpeg_text(film_title)
-        total_start = total_duration - last_seconds
-
-        drawtext_left = (
-            f"drawtext=text='KALAN\\: %{{eif\\:trunc(max(0\\,{total_start}-pts_time)/3600)\\:d\\:2}}\\:%{{eif\\:trunc(mod(max(0\\,{total_start}-pts_time)/60\\,60))\\:d\\:2}}\\:%{{eif\\:trunc(mod(max(0\\,{total_start}-pts_time)\\,60))\\:d\\:2}}':"
-            "fontcolor=white:fontsize=25:borderw=2:bordercolor=black:x=30:y=main_h-th-30"
-        )
-        drawtext_right = (
-            f"drawtext=text='{escaped_title}':fontcolor=white:fontsize=28:"
-            "borderw=2:bordercolor=black:x=main_w-tw-50:y=main_h-th-50"
-        )
-
-        filter_str = f"{overlay_filter};[v_logo]{drawtext_left}[v_tmp];[v_tmp]{drawtext_right}[v]"
 
         command = [
             'ffmpeg'
