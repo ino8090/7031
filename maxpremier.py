@@ -33,6 +33,25 @@ def format_hms(total_seconds):
     return f"{hrs:02d}:{mins:02d}:{secs:02d}"
 
 
+def get_stream_duration(url):
+    """ffprobe ile bir video/ses kaynağının toplam süresini (saniye) tespit eder. Başarısız olursa None döner."""
+    try:
+        cmd = [
+            'ffprobe', '-v', 'error',
+            '-user_agent', STREAM_USER_AGENT,
+            '-show_entries', 'format=duration',
+            '-of', 'default=noprint_wrappers=1:nokey=1',
+            url
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
+        duration = float(result.stdout.strip())
+        if duration > 0:
+            return duration
+    except Exception as e:
+        print(f"⚠️ Süre (duration) tespit hatası: {e}")
+    return None
+
+
 def escape_drawtext(text):
     """ffmpeg drawtext filtresi için metni güvenli hale getirir (\\, :, ', % karakterlerini escaper)."""
     if not text:
@@ -210,11 +229,19 @@ def start_m3u_stream():
                          reconnect_args + ss_arg + ['-re', '-i', audio_url]
             audio_map = ['-map', '1:a:0']
             next_input_index = 2
+            probe_url = video_url
         else:
             print(f"📡 Kaynak Yayın     : {target_stream_url}")
             input_args = reconnect_args + ss_arg + ['-re', '-i', target_stream_url]
             audio_map = ['-map', '0:a?']
             next_input_index = 1
+            probe_url = target_stream_url
+
+        film_duration = get_stream_duration(probe_url)
+        if film_duration is not None:
+            print(f"⏳ Tespit edilen film süresi: {format_hms(film_duration)}")
+        else:
+            print("⚠️ Film süresi tespit edilemedi, 'sonraki filme kalan süre' gösterilmeyecek.")
 
         print("=" * 60)
 
@@ -243,7 +270,24 @@ def start_m3u_stream():
             f"drawtext=text='{time_expr}':fontcolor=white:fontsize=25:"
             f"borderw=2:bordercolor=black:x=30:y=h-th-30"
         )
-        drawtext_chain = f"[vbase]{drawtext_title},{drawtext_time}[v]"
+
+        # Sonraki filme kalan süre (bilinen süre - şimdiye kadar bu filmde geçen süre).
+        # Kanal-süre yazısının hemen üstünde, sol altta gösterilir.
+        if film_duration is not None:
+            remaining_expr = f"({film_duration:.3f}-{int(last_seconds)}-t)"
+            hh_expr = f"trunc({remaining_expr}/3600)"
+            mm_expr = f"trunc(mod({remaining_expr},3600)/60)"
+            ss_expr = f"trunc(mod({remaining_expr},60))"
+            remaining_time_text = (
+                f"%{{eif\\:{hh_expr}\\:d\\:2}}\\:%{{eif\\:{mm_expr}\\:d\\:2}}\\:%{{eif\\:{ss_expr}\\:d\\:2}}"
+            )
+            drawtext_remaining = (
+                f"drawtext=text='Sonraki filme kalan\\: {remaining_time_text}':fontcolor=yellow:fontsize=22:"
+                f"borderw=2:bordercolor=black:x=30:y=h-th-70"
+            )
+            drawtext_chain = f"[vbase]{drawtext_title},{drawtext_time},{drawtext_remaining}[v]"
+        else:
+            drawtext_chain = f"[vbase]{drawtext_title},{drawtext_time}[v]"
 
         if has_logo1 and has_logo2:
             logo_inputs = ['-i', 'logo.png', '-i', 'logo2.png']
