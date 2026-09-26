@@ -37,7 +37,9 @@ def sanitize_text(text):
     """FFmpeg drawtext filtresi için özel karakterleri temizler/kaçırır."""
     if not text:
         return ""
-    text = text.replace("\\", "/").replace(":", "\\:").replace("'", "").replace('"', '')
+    # Çakışmaya sebep olan karakterlerin temizlenmesi
+    text = re.sub(r"[r'\"]", "", text)
+    text = text.replace(":", "\\:").replace("[", "\\[").replace("]", "\\]")
     return text
 
 
@@ -255,20 +257,20 @@ def start_m3u_stream():
             logo_inputs = []
             logo_overlay_filter = '[main]null[v_base]'
 
-        # --- DRAWTEXT FİLTRELERİ (DÜZELTİLMİŞ SÖZDİZİMİ) ---
+        # --- DRAWTEXT FİLTRELERİ (GÜVENLİ SÖZDİZİMİ) ---
         safe_film_title = sanitize_text(film_title)
         init_sec = int(last_seconds)
 
-        # Sol Alt Köşe: Geçen Süre
+        # Sol Alt Köşe: Geçen Süre (String Concatenation ile FFmpeg parse güvenliği)
         time_text_filter = (
-            f"drawtext=text='%{{pts\\:hms\\:{init_sec}}}':x=30:y=h-th-30:"
-            f"fontsize=25:fontcolor=white:bold=1:borderw=2:bordercolor=black"
+            "drawtext=text='%{pts\\:hms\\:" + str(init_sec) + "}':x=30:y=h-th-30:"
+            "fontsize=25:fontcolor=white:bold=1:borderw=2:bordercolor=black"
         )
         
         # Sağ Alt Köşe: Film / İçerik Adı
         title_text_filter = (
-            f"drawtext=text='{safe_film_title}':x=w-tw-30:y=h-th-30:"
-            f"fontsize=25:fontcolor=white:bold=1:borderw=2:bordercolor=black"
+            "drawtext=text='" + safe_film_title + "':x=w-tw-30:y=h-th-30:"
+            "fontsize=25:fontcolor=white:bold=1:borderw=2:bordercolor=black"
         )
 
         # Filtre zincirini oluşturma
