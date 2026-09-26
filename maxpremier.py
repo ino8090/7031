@@ -33,6 +33,14 @@ def format_hms(total_seconds):
     return f"{hrs:02d}:{mins:02d}:{secs:02d}"
 
 
+def sanitize_text(text):
+    """FFmpeg drawtext filtresi için özel karakterleri temizler/kaçırır."""
+    if not text:
+        return ""
+    text = text.replace(":", "\\:").replace("'", "").replace('"', '')
+    return text
+
+
 def get_local_state():
     """Yerel state dosyasından son durumu okur."""
     if os.path.exists(STATE_FILE_NAME):
@@ -175,7 +183,7 @@ def start_m3u_stream():
         # Sadece saniye 0'dan büyükse -ss parametresini ekle
         ss_arg = ['-ss', str(last_seconds)] if last_seconds > 0 else []
 
-        # İkinci koddaki sorunsuz çalışan bağlantı parametreleri
+        # Sorunsuz çalışan bağlantı parametreleri
         reconnect_args = [
             '-headers', headers_arg,
             '-reconnect', '1',
@@ -214,8 +222,6 @@ def start_m3u_stream():
         has_logo2 = os.path.exists('logo2.png') and os.path.getsize('logo2.png') > 0
 
         logo_inputs = []
-        filter_str = ""
-
         current_logo_idx = next_input_index
 
         if has_logo1 and has_logo2:
@@ -223,40 +229,55 @@ def start_m3u_stream():
             logo1_idx = current_logo_idx
             logo2_idx = current_logo_idx + 1
 
-            filter_str = (
-                '[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,'
-                'pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,fps=30[main];'
+            logo_overlay_filter = (
                 f'[{logo1_idx}:v]scale=-2:80[logo1];'
                 f'[{logo2_idx}:v]scale=-2:20[logo2];'
                 '[main][logo1]overlay=50:50[tmp];'
-                '[tmp][logo2]overlay=main_w-overlay_w-50:50[v]'
+                '[tmp][logo2]overlay=main_w-overlay_w-50:50[v_base]'
             )
         elif has_logo1:
             logo_inputs = ['-i', 'logo.png']
             logo1_idx = current_logo_idx
 
-            filter_str = (
-                '[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,'
-                'pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,fps=30[main];'
+            logo_overlay_filter = (
                 f'[{logo1_idx}:v]scale=-2:80[logo1];'
-                '[main][logo1]overlay=50:50[v]'
+                '[main][logo1]overlay=50:50[v_base]'
             )
         elif has_logo2:
             logo_inputs = ['-i', 'logo2.png']
             logo2_idx = current_logo_idx
 
-            filter_str = (
-                '[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,'
-                'pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,fps=30[main];'
+            logo_overlay_filter = (
                 f'[{logo2_idx}:v]scale=-2:20[logo2];'
-                '[main][logo2]overlay=main_w-overlay_w-50:50[v]'
+                '[main][logo2]overlay=main_w-overlay_w-50:50[v_base]'
             )
         else:
             logo_inputs = []
-            filter_str = (
-                '[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,'
-                'pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,fps=30[v]'
-            )
+            logo_overlay_filter = '[main]null[v_base]'
+
+        # --- DRAWTEXT FİLTRELERİ (KALIN / BOLD METİN) ---
+        safe_film_title = sanitize_text(film_title)
+
+        # Sol Alt Köşe: Geçen Süre (Kalın Metin)
+        time_text_filter = (
+            f"drawtext=text='%{{pts\\:hms\\:{last_seconds}}}':x=30:y=h-th-30:"
+            f"fontsize=25:fontcolor=white:bold=1:borderw=2:bordercolor=black"
+        )
+        
+        # Sağ Alt Köşe: Film / İçerik Adı (Kalın Metin)
+        title_text_filter = (
+            f"drawtext=text='{safe_film_title}':x=w-tw-30:y=h-th-30:"
+            f"fontsize=25:fontcolor=white:bold=1:borderw=2:bordercolor=black"
+        )
+
+        # Filtre zincirini oluşturma
+        filter_str = (
+            '[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,'
+            'pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,fps=30[main];'
+            f'{logo_overlay_filter};'
+            f'[v_base]{time_text_filter}[v_time];'
+            f'[v_time]{title_text_filter}[v]'
+        )
 
         command = [
             'ffmpeg'
