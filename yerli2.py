@@ -68,15 +68,6 @@ def resolve_stream_url(url, timeout=15):
         return url
 
 
-def is_live_hls(url):
-    try:
-        headers = {'User-Agent': STREAM_USER_AGENT}
-        r = requests.get(url, headers=headers, timeout=10)
-        return '#EXT-X-ENDLIST' not in r.text
-    except Exception:
-        return False
-
-
 def download_assets():
     headers = {'User-Agent': STREAM_USER_AGENT}
     try:
@@ -87,14 +78,6 @@ def download_assets():
             print("✅ Logo başarıyla indirildi.")
     except Exception as e:
         print(f"⚠️ Logo indirme hatası: {e}")
-    try:
-        res_flag = requests.get(FLAG_URL, headers=headers, timeout=15)
-        if res_flag.status_code == 200 and len(res_flag.content) > 0:
-            with open('flag.png', 'wb') as f:
-                f.write(res_flag.content)
-            print("✅ Türk Bayrağı başarıyla indirildi.")
-    except Exception as e:
-        print(f"⚠️ Bayrak indirme hatası: {e}")
 
 
 def format_hms(total_seconds):
@@ -140,20 +123,19 @@ def get_local_state():
             with open(STATE_FILE_NAME, "r", encoding="utf-8") as f:
                 data = json.load(f)
                 idx = data.get("last_index", 0)
-                sec = data.get("last_seconds", 0)
-                print(f"✅ Yerel state okundu => İndeks: {idx}, Saniye: {sec}")
-                return idx, sec
+                print(f"✅ Yerel state okundu => İndeks: {idx}")
+                return idx
         except Exception as e:
             print(f"⚠️ Yerel state okuma hatası: {e}")
-    return 0, 0
+    return 0
 
 
-def update_local_state(index, seconds):
+def update_local_state(index):
     try:
-        data = {"last_index": int(index), "last_seconds": int(seconds)}
+        data = {"last_index": int(index)}
         with open(STATE_FILE_NAME, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
-        print(f"💾 Konum kaydedildi => İndeks: {index}, Saniye: {int(seconds)}")
+        print(f"💾 Konum kaydedildi => İndeks: {index}")
     except Exception as e:
         print(f"⚠️ Yerel state yazma hatası: {e}")
 
@@ -219,7 +201,7 @@ def start_m3u_stream():
     print(f"🔧 RTMP   : {RTMP_SERVER}")
 
     download_assets()
-    current_index, last_seconds = get_local_state()
+    current_index = get_local_state()
 
     while True:
         playlist = get_m3u_playlist(M3U_URL)
@@ -229,7 +211,6 @@ def start_m3u_stream():
 
         if current_index >= len(playlist):
             current_index = 0
-            last_seconds = 0
 
         current_item = playlist[current_index]
         raw_url = current_item["url"]
@@ -239,23 +220,13 @@ def start_m3u_stream():
         target_stream_url = resolve_stream_url(raw_url)
         print(f"🎯 Kullanılacak stream: {target_stream_url}")
 
-        # ============================================================
-        # ÖNEMLİ: -ss DEVRE DIŞI BIRAKILDI
-        # Sebep: Vixolity HLS sunucusu -ss ile verilen saniyeyi
-        # "End of file" ile kesiyor, paket sırası bozuluyor, 234 alıyoruz.
-        # Bu yüzden HER SEFERİNDE film BAŞTAN başlar (state sadece index için).
-        # ============================================================
-        last_seconds = 0
-        print("ℹ️ -ss devre dışı (Vixolity -ss'yi desteklemiyor) → film baştan başlar")
-
         print("=" * 60)
         print(f"🎬 {film_title}")
-        print(f"⏱️ Başlangıç: 0 sn")
         print(f"🚀 RTMP: {RTMP_SERVER}")
         print("=" * 60)
 
-        print_dashboard(film_title, current_index, len(playlist), last_seconds, status="🟡 Başlatılıyor")
-        write_step_summary(film_title, current_index, len(playlist), last_seconds, status="🟡 Başlatılıyor")
+        print_dashboard(film_title, current_index, len(playlist), 0, status="🟡 Başlatılıyor")
+        write_step_summary(film_title, current_index, len(playlist), 0, status="🟡 Başlatılıyor")
 
         headers_arg = (
             f"User-Agent: {STREAM_USER_AGENT}\r\n"
@@ -263,8 +234,10 @@ def start_m3u_stream():
             "Origin: https://ha.vixolity.com\r\n"
         )
 
-        # -ss YOK artık. Direkt stream açılır.
-        base_input = [
+        # ============================================================
+        # HİÇBİR MÜDAHALE YOK — kaynak ne verirse o
+        # ============================================================
+        input_args = [
             '-thread_queue_size', '2048',
             '-headers', headers_arg,
             '-user_agent', STREAM_USER_AGENT,
@@ -274,27 +247,13 @@ def start_m3u_stream():
             '-reconnect_at_eof', '1',
             '-http_persistent', '1',
             '-multiple_requests', '1',
-            '-fflags', '+genpts+igndts+discardcorrupt',
             '-analyzeduration', '10000000',
             '-probesize', '10000000',
-            '-rw_timeout', '20000000',
+            '-re',
+            '-i', target_stream_url,
         ]
 
-        is_dual_input = ";" in target_stream_url
-
-        if is_dual_input:
-            video_url, audio_url = target_stream_url.split(";", 1)
-            video_url = video_url.strip()
-            audio_url = audio_url.strip()
-            input_args = (
-                base_input + ['-re', '-i', video_url]
-                + base_input + ['-re', '-i', audio_url]
-            )
-            probe_url = video_url
-        else:
-            input_args = base_input + ['-re', '-i', target_stream_url]
-            probe_url = target_stream_url
-
+        probe_url = target_stream_url
         film_duration = get_stream_duration(probe_url)
         if film_duration is not None:
             print(f"⏳ Süre: {format_hms(film_duration)}")
@@ -302,25 +261,16 @@ def start_m3u_stream():
             print("⚠️ Süre tespit edilemedi.")
 
         has_logo = os.path.exists('logo.png') and os.path.getsize('logo.png') > 0
-        has_flag = False
 
         overlay_inputs = []
-        next_input_index = 2 if is_dual_input else 1
-
-        # ============================================================
-        # FILTER ZİNCİRİ — PTS RESET (senkron için)
-        # ============================================================
         filter_steps = [
-            '[0:v]setpts=PTS-STARTPTS,scale=1920:1080:force_original_aspect_ratio=decrease,'
-            'pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black[main_v]'
+            # Sadece ölçekle + pad. fps zorlaması yok. PTS reset yok.
+            '[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,'
+            'pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black[main]'
         ]
 
-        audio_input_idx = 1 if is_dual_input else 0
-        filter_steps.append(
-            f'[{audio_input_idx}:a:0]asetpts=PTS-STARTPTS[main_a]'
-        )
-
-        last_stream = '[main_v]'
+        last_stream = '[main]'
+        next_input_index = 1
 
         if has_logo:
             logo_idx = next_input_index
@@ -361,10 +311,10 @@ def start_m3u_stream():
         filter_str = ";".join(filter_steps)
         if last_stream != '[v]':
             filter_str += f";{last_stream}null[v]"
-        # ============================================================
 
         # ============================================================
-        # OUTPUT ARGS — 234 hatasını önleyen kritik ayarlar
+        # ÇIKIŞ — ses ve görüntü KAYNAKTAN GELDİĞİ GİBİ geçer
+        # Ses için hiçbir filter yok, -c:a aac ile sadece encode edilir
         # ============================================================
         command = [
             'ffmpeg',
@@ -373,33 +323,22 @@ def start_m3u_stream():
         ] + input_args + overlay_inputs + [
             '-filter_complex', filter_str,
             '-map', '[v]',
-            '-map', '[main_a]',
+            '-map', '0:a:0',                # ← kaynaktaki ilk ses, olduğu gibi
             '-c:v', 'libx264',
             '-preset', 'veryfast',
             '-pix_fmt', 'yuv420p',
-            '-r', '30',
             '-b:v', '2000k',
             '-maxrate', '2000k',
             '-bufsize', '4000k',
-            '-g', '60',
-            # ===== 234 HATASI İÇİN KRİTİK =====
-            '-max_interleave_delta', '0',       # ← hata mesajının önerdiği
-            '-max_muxing_queue_size', '9999',
-            '-fflags', '+genpts+igndts',
-            '-avoid_negative_ts', 'disabled',   # ← make_zero yerine disabled
-            # ==================================
-            # Audio
             '-c:a', 'aac',
             '-b:a', '128k',
             '-ar', '44100',
             '-ac', '2',
-            # RTMP
             '-f', 'flv',
-            '-flvflags', 'no_duration_filesize',
             RTMP_SERVER
         ]
 
-        print("▶ FFmpeg başlatıldı (baştan, senkron modu)...")
+        print("▶ FFmpeg başlatıldı (kaynak ne verirse o)...")
         process = subprocess.Popen(
             command,
             stderr=subprocess.PIPE,
@@ -407,7 +346,6 @@ def start_m3u_stream():
             bufsize=1
         )
 
-        last_save_time = time.time()
         last_dashboard_time = time.time()
         current_stream_seconds = 0
         last_lines = []
@@ -418,20 +356,16 @@ def start_m3u_stream():
                 break
             if line:
                 last_lines.append(line.rstrip())
-                if len(last_lines) > 20:
+                if len(last_lines) > 15:
                     last_lines.pop(0)
 
             if "time=" in line:
                 time_match = re.search(r'time=(\d+):(\d+):(\d+\.\d+)', line)
                 if time_match:
                     hrs, mins, secs = time_match.groups()
-                    played_seconds = int(hrs) * 3600 + int(mins) * 60 + float(secs)
-                    current_stream_seconds = played_seconds
+                    current_stream_seconds = int(hrs) * 3600 + int(mins) * 60 + float(secs)
 
                     now = time.time()
-                    if now - last_save_time > 30:
-                        update_local_state(current_index, current_stream_seconds)
-                        last_save_time = now
                     if now - last_dashboard_time > 30:
                         print_dashboard(film_title, current_index, len(playlist), current_stream_seconds)
                         write_step_summary(film_title, current_index, len(playlist), current_stream_seconds)
@@ -441,8 +375,7 @@ def start_m3u_stream():
             print("✅ İçerik bitti, sıradakine geçiliyor.")
             write_step_summary(film_title, current_index, len(playlist), current_stream_seconds, status="✅ Bitti")
             current_index += 1
-            last_seconds = 0
-            update_local_state(current_index, 0)
+            update_local_state(current_index)
         else:
             print(f"⚠️ Yayın koptu (Return Code: {process.returncode})")
             print("---- FFmpeg son satırlar ----")
@@ -450,10 +383,8 @@ def start_m3u_stream():
                 print(l)
             print("-----------------------------")
             write_step_summary(film_title, current_index, len(playlist), current_stream_seconds, status=f"🔴 Koptu ({process.returncode})")
-            # HATA OLUNCA SONRAKİ FİLME GEÇ (aynı filmde takılıp kalmasın)
             current_index += 1
-            last_seconds = 0
-            update_local_state(current_index, 0)
+            update_local_state(current_index)
 
         print("⚠️ 5 saniye sonra tekrar denenecek...")
         time.sleep(5)
