@@ -40,7 +40,6 @@ def resolve_stream_url(url, timeout=15):
         'Accept': '*/*',
     }
 
-    # Zaten stream linkiyse dokunma
     if any(url.lower().split('?')[0].endswith(ext) for ext in STREAM_EXTENSIONS):
         return url
 
@@ -48,7 +47,6 @@ def resolve_stream_url(url, timeout=15):
         r = requests.get(url, headers=headers, timeout=timeout, allow_redirects=True)
         final_url = r.url
 
-        # Redirect sonrası stream'e düştüyse
         if any(final_url.lower().split('?')[0].endswith(ext) for ext in STREAM_EXTENSIONS):
             print(f"✅ Redirect ile stream bulundu: {final_url}")
             return final_url
@@ -301,28 +299,21 @@ def start_m3u_stream():
 
         ss_arg = ['-ss', str(last_seconds)] if last_seconds > 0 else []
 
-        # ============ ÇİFT LİNK / TEK LİNK + AUDIO MAP DÜZELTİLDİ ============
-        if ";" in target_stream_url:
+        # ============ ÇİFT LİNK / TEK LİNK ============
+        is_dual_input = ";" in target_stream_url
+
+        if is_dual_input:
             video_url, audio_url = target_stream_url.split(";", 1)
             video_url = video_url.strip()
             audio_url = audio_url.strip()
 
             input_args = reconnect_args + ss_arg + ['-re', '-i', video_url] + \
                          reconnect_args + ss_arg + ['-re', '-i', audio_url]
-
-            # SADECE audio input'un ilk sesi; video input'un sesi reddedilir.
-            # "-map -0:a" olmadan FLV muxer "at most one audio stream" hatası verir.
-            audio_map = ['-map', '1:a:0', '-map', '-0:a']
-            next_input_index = 2
             probe_url = video_url
         else:
             input_args = reconnect_args + ss_arg + ['-re', '-i', target_stream_url]
-
-            # SADECE ilk ses track'i. HLS çoklu audio track gönderirse FLV patlar.
-            audio_map = ['-map', '0:a:0']
-            next_input_index = 1
             probe_url = target_stream_url
-        # ====================================================================
+        # =============================================
 
         film_duration = get_stream_duration(probe_url)
         if film_duration is not None:
@@ -334,12 +325,25 @@ def start_m3u_stream():
         has_flag = False  # Sağ üst bayrak kapalı
 
         overlay_inputs = []
+        next_input_index = 2 if is_dual_input else 1
+
+        # ================= VIDEO + AUDIO FILTER ZİNCİRİ =================
+        # Video zinciri (PTS sıfırlama + ölçek + fps)
         filter_steps = [
             '[0:v]setpts=PTS-STARTPTS,scale=1920:1080:force_original_aspect_ratio=decrease,'
-            'pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,fps=30[main]'
+            'pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,fps=30[main_v]'
         ]
-        last_stream = '[main]'
 
+        # Audio zinciri (PTS sıfırlama + async resample — senkron için kritik)
+        audio_input_idx = 1 if is_dual_input else 0
+        filter_steps.append(
+            f'[{audio_input_idx}:a:0]asetpts=PTS-STARTPTS,'
+            f'aresample=async=1:first_pts=0:min_hard_comp=0.100000[main_a]'
+        )
+
+        last_stream = '[main_v]'
+
+        # Logo (sol üst)
         if has_logo:
             logo_idx = next_input_index
             overlay_inputs.extend(['-i', 'logo.png'])
@@ -348,6 +352,7 @@ def start_m3u_stream():
             filter_steps.append(f'{last_stream}[logo]overlay=55:55[v_logo]')
             last_stream = '[v_logo]'
 
+        # Bayrak (sağ üst - kapalı)
         if has_flag:
             flag_idx = next_input_index
             overlay_inputs.extend(['-i', 'flag.png'])
@@ -387,13 +392,14 @@ def start_m3u_stream():
         filter_str = ";".join(filter_steps)
         if last_stream != '[v]':
             filter_str += f";{last_stream}null[v]"
+        # ==================================================================
 
         command = [
             'ffmpeg'
         ] + input_args + overlay_inputs + [
             '-filter_complex', filter_str,
-            '-map', '[v]'
-        ] + audio_map + [
+            '-map', '[v]',
+            '-map', '[main_a]',              # ← Audio filter çıkışı (senkron)
             '-c:v', 'libx264',
             '-preset', 'veryfast',
             '-pix_fmt', 'yuv420p',
@@ -404,14 +410,13 @@ def start_m3u_stream():
             '-g', '60',
             '-fflags', '+genpts+igndts',
             '-avoid_negative_ts', 'make_zero',
-            '-vsync', 'cfr',
-            '-async', '1',
+            '-fps_mode', 'cfr',              # -vsync cfr yerine (yeni FFmpeg)
             '-max_muxing_queue_size', '9999',
             '-max_interleave_delta', '0',
             '-c:a', 'aac',
             '-b:a', '128k',
             '-ar', '44100',
-            '-ac', '2',                      # ← Stereo zorla (FLV 5.1 kabul etmez)
+            '-ac', '2',
             '-f', 'flv',
             RTMP_SERVER
         ]
