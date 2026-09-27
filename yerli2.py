@@ -24,7 +24,6 @@ GITHUB_STEP_SUMMARY = os.getenv("GITHUB_STEP_SUMMARY")
 
 STREAM_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
-# ===================== RESOLVER =====================
 STREAM_EXTENSIONS = ('.m3u8', '.mp4', '.mpd', '.ts', '.mkv', '.webm')
 
 
@@ -35,21 +34,16 @@ def resolve_stream_url(url, timeout=15):
         'Origin': 'https://ha.vixolity.com',
         'Accept': '*/*',
     }
-
     if any(url.lower().split('?')[0].endswith(ext) for ext in STREAM_EXTENSIONS):
         return url
-
     try:
         r = requests.get(url, headers=headers, timeout=timeout, allow_redirects=True)
         final_url = r.url
-
         if any(final_url.lower().split('?')[0].endswith(ext) for ext in STREAM_EXTENSIONS):
             print(f"✅ Redirect ile stream bulundu: {final_url}")
             return final_url
-
         html = r.text
         base = f"{urlparse(final_url).scheme}://{urlparse(final_url).netloc}"
-
         patterns = [
             r'["\'](https?://[^"\']+\.m3u8[^"\']*)["\']',
             r'["\'](https?://[^"\']+\.mp4[^"\']*)["\']',
@@ -59,7 +53,6 @@ def resolve_stream_url(url, timeout=15):
             r'["\'](/[^"\']+\.m3u8[^"\']*)["\']',
             r'["\'](/[^"\']+\.mp4[^"\']*)["\']',
         ]
-
         for pat in patterns:
             m = re.search(pat, html, re.IGNORECASE)
             if m:
@@ -68,10 +61,8 @@ def resolve_stream_url(url, timeout=15):
                     found = urljoin(base, found)
                 print(f"✅ HTML içinden stream bulundu: {found}")
                 return found
-
         print(f"⚠️ Stream URL'i bulunamadı, orijinal deneniyor: {url}")
         return url
-
     except Exception as e:
         print(f"⚠️ resolve_stream_url hatası: {e}")
         return url
@@ -88,7 +79,6 @@ def is_live_hls(url):
 
 def download_assets():
     headers = {'User-Agent': STREAM_USER_AGENT}
-
     try:
         res_logo = requests.get(LOGO_URL, headers=headers, timeout=15)
         if res_logo.status_code == 200 and len(res_logo.content) > 0:
@@ -97,7 +87,6 @@ def download_assets():
             print("✅ Logo başarıyla indirildi.")
     except Exception as e:
         print(f"⚠️ Logo indirme hatası: {e}")
-
     try:
         res_flag = requests.get(FLAG_URL, headers=headers, timeout=15)
         if res_flag.status_code == 200 and len(res_flag.content) > 0:
@@ -246,12 +235,10 @@ def start_m3u_stream():
         raw_url = current_item["url"]
         film_title = current_item["title"]
 
-        # HTML → m3u8 çözümleme
         print(f"🔍 Kaynak çözümleniyor: {raw_url}")
         target_stream_url = resolve_stream_url(raw_url)
         print(f"🎯 Kullanılacak stream: {target_stream_url}")
 
-        # Canlı HLS ise başlangıç saniyesini sıfırla
         if '.m3u8' in target_stream_url.lower():
             if is_live_hls(target_stream_url):
                 print("🔴 Canlı HLS algılandı — başlangıç saniyesi sıfırlanıyor")
@@ -272,11 +259,13 @@ def start_m3u_stream():
             "Origin: https://ha.vixolity.com\r\n"
         )
 
-        # ==================== INPUT ARGS ====================
-        # -ss, -copyts, -start_at_zero ile PTS kaydırma yapmadan başlat
-        # -re SADECE canlı akış hızını korumak için, -ss ile çakışmasın
+        # ============================================================
+        # SENKRON İÇİN ÖZEL INPUT ARGS
+        # -ss input'ta YOK (senkronu bozuyor)
+        # -ss yerine "-t" ile başlangıç atlanacak
+        # ============================================================
         base_input = [
-            '-thread_queue_size', '1024',
+            '-thread_queue_size', '2048',
             '-headers', headers_arg,
             '-user_agent', STREAM_USER_AGENT,
             '-reconnect', '1',
@@ -289,13 +278,8 @@ def start_m3u_stream():
             '-fflags', '+genpts+igndts+discardcorrupt',
             '-analyzeduration', '10000000',
             '-probesize', '10000000',
+            '-rw_timeout', '20000000',
         ]
-
-        # SENKRON İÇİN KRİTİK: -ss + -copyts + -start_at_zero birlikte
-        if last_seconds > 0:
-            seek_args = ['-ss', str(last_seconds), '-copyts', '-start_at_zero']
-        else:
-            seek_args = []
 
         is_dual_input = ";" in target_stream_url
 
@@ -303,16 +287,15 @@ def start_m3u_stream():
             video_url, audio_url = target_stream_url.split(";", 1)
             video_url = video_url.strip()
             audio_url = audio_url.strip()
-
             input_args = (
-                base_input + seek_args + ['-re', '-i', video_url]
-                + base_input + seek_args + ['-re', '-i', audio_url]
+                base_input + ['-i', video_url]
+                + base_input + ['-i', audio_url]
             )
             probe_url = video_url
         else:
-            input_args = base_input + seek_args + ['-re', '-i', target_stream_url]
+            input_args = base_input + ['-i', target_stream_url]
             probe_url = target_stream_url
-        # ====================================================
+        # ============================================================
 
         film_duration = get_stream_duration(probe_url)
         if film_duration is not None:
@@ -326,18 +309,20 @@ def start_m3u_stream():
         overlay_inputs = []
         next_input_index = 2 if is_dual_input else 1
 
-        # ================= VIDEO + AUDIO FILTER =================
-        # fps zorlaması YOK — kaynak fps'i korunur (senkron bozulmasın)
+        # ============================================================
+        # SENKRON İÇİN ÖZEL FILTER ZİNCİRİ
+        # Video: PTS sıfırla → scale → pad (fps zorlaması YOK)
+        # Audio: PTS sıfırla → aresample (async kaldırıldı, sadece PTS reset)
+        # ============================================================
         filter_steps = [
             '[0:v]setpts=PTS-STARTPTS,scale=1920:1080:force_original_aspect_ratio=decrease,'
             'pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black[main_v]'
         ]
 
-        # Audio: PTS sıfırla, async resample ile videoya hizala
         audio_input_idx = 1 if is_dual_input else 0
+        # aresample async KULLANMA — sadece PTS sıfırla (senkronu bozuyor)
         filter_steps.append(
-            f'[{audio_input_idx}:a:0]asetpts=PTS-STARTPTS,'
-            f'aresample=async=1:first_pts=0:min_hard_comp=0.100000[main_a]'
+            f'[{audio_input_idx}:a:0]asetpts=PTS-STARTPTS[main_a]'
         )
 
         last_stream = '[main_v]'
@@ -349,14 +334,6 @@ def start_m3u_stream():
             filter_steps.append(f'[{logo_idx}:v]scale=-2:80[logo]')
             filter_steps.append(f'{last_stream}[logo]overlay=55:55[v_logo]')
             last_stream = '[v_logo]'
-
-        if has_flag:
-            flag_idx = next_input_index
-            overlay_inputs.extend(['-i', 'flag.png'])
-            next_input_index += 1
-            filter_steps.append(f'[{flag_idx}:v]scale=60:-2[flag]')
-            filter_steps.append(f'{last_stream}[flag]overlay=main_w-overlay_w-60:60[v_flag]')
-            last_stream = '[v_flag]'
 
         escaped_title = escape_drawtext(film_title)
 
@@ -389,36 +366,54 @@ def start_m3u_stream():
         filter_str = ";".join(filter_steps)
         if last_stream != '[v]':
             filter_str += f";{last_stream}null[v]"
-        # ========================================================
+        # ============================================================
+
+        # ============================================================
+        # SENKRON İÇİN ÖZEL OUTPUT ARGS
+        # -ss BURADA (input seek yerine output seek) — senkronu bozmaz
+        # -copyts + -start_at_zero + -avoid_negative_ts make_zero
+        # ============================================================
+        output_seek = ['-ss', str(last_seconds)] if last_seconds > 0 else []
 
         command = [
-            'ffmpeg'
-        ] + input_args + overlay_inputs + [
+            'ffmpeg',
+            '-hide_banner',
+            '-loglevel', 'warning',
+        ] + input_args + overlay_inputs + output_seek + [
             '-filter_complex', filter_str,
             '-map', '[v]',
             '-map', '[main_a]',
             '-c:v', 'libx264',
             '-preset', 'veryfast',
             '-pix_fmt', 'yuv420p',
-            # -r ZORLAMASI YOK — kaynak fps korunur
             '-b:v', '2000k',
             '-maxrate', '2000k',
             '-bufsize', '4000k',
             '-g', '60',
-            '-fflags', '+genpts+igndts',
-            # -avoid_negative_ts SENKRON İÇİN KALDIRILDI
-            '-fps_mode', 'passthrough',          # fps dönüşümü yapma
+            # SENKRON: fps_mode cfr + -r 30 (output tarafında)
+            '-r', '30',
+            '-fps_mode', 'cfr',
+            # SENKRON: PTS reset ve negatif timestamp düzeltme
+            '-copyts',
+            '-start_at_zero',
+            '-avoid_negative_ts', 'make_zero',
+            # SENKRON: muxer'a A/V arası max 1ms tolerans
             '-max_muxing_queue_size', '9999',
-            '-max_interleave_delta', '0',
+            '-max_interleave_delta', '1',
+            # Audio
             '-c:a', 'aac',
             '-b:a', '128k',
             '-ar', '44100',
             '-ac', '2',
+            # RTMP
             '-f', 'flv',
+            '-flvflags', 'no_duration_filesize',
+            '-rtmp_live', 'live',
             RTMP_SERVER
         ]
 
-        print("▶ FFmpeg başlatıldı...")
+        print("▶ FFmpeg başlatıldı (senkron modu)...")
+        print(f"   Başlangıç saniyesi (output seek): {last_seconds}")
         process = subprocess.Popen(
             command,
             stderr=subprocess.PIPE,
@@ -437,7 +432,7 @@ def start_m3u_stream():
                 break
             if line:
                 last_lines.append(line.rstrip())
-                if len(last_lines) > 15:
+                if len(last_lines) > 20:
                     last_lines.pop(0)
 
             if "time=" in line:
