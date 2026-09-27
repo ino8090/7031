@@ -29,10 +29,6 @@ STREAM_EXTENSIONS = ('.m3u8', '.mp4', '.mpd', '.ts', '.mkv', '.webm')
 
 
 def resolve_stream_url(url, timeout=15):
-    """
-    URL zaten stream ise direkt döner.
-    HTML sayfasıysa içinden gerçek .m3u8/.mp4 URL'ini çıkarır.
-    """
     headers = {
         'User-Agent': STREAM_USER_AGENT,
         'Referer': 'https://ha.vixolity.com/',
@@ -82,7 +78,6 @@ def resolve_stream_url(url, timeout=15):
 
 
 def is_live_hls(url):
-    """HLS linkinin canlı mı VOD mu olduğunu kontrol eder."""
     try:
         headers = {'User-Agent': STREAM_USER_AGENT}
         r = requests.get(url, headers=headers, timeout=10)
@@ -92,7 +87,6 @@ def is_live_hls(url):
 
 
 def download_assets():
-    """Logo ve Türk Bayrağı görsellerini indirir."""
     headers = {'User-Agent': STREAM_USER_AGENT}
 
     try:
@@ -123,7 +117,6 @@ def format_hms(total_seconds):
 
 
 def get_stream_duration(url):
-    """ffprobe ile süreyi tespit eder."""
     try:
         cmd = [
             'ffprobe', '-v', 'error',
@@ -258,7 +251,7 @@ def start_m3u_stream():
         target_stream_url = resolve_stream_url(raw_url)
         print(f"🎯 Kullanılacak stream: {target_stream_url}")
 
-        # HLS canlı mı? Canlı ise -ss kullanma
+        # Canlı HLS ise başlangıç saniyesini sıfırla
         if '.m3u8' in target_stream_url.lower():
             if is_live_hls(target_stream_url):
                 print("🔴 Canlı HLS algılandı — başlangıç saniyesi sıfırlanıyor")
@@ -273,15 +266,16 @@ def start_m3u_stream():
         print_dashboard(film_title, current_index, len(playlist), last_seconds, status="🟡 Başlatılıyor")
         write_step_summary(film_title, current_index, len(playlist), last_seconds, status="🟡 Başlatılıyor")
 
-        # Header'lar (Referer/Origin dahil)
         headers_arg = (
             f"User-Agent: {STREAM_USER_AGENT}\r\n"
             "Referer: https://ha.vixolity.com/\r\n"
             "Origin: https://ha.vixolity.com\r\n"
         )
 
-        # HLS uyumlu reconnect args
-        reconnect_args = [
+        # ==================== INPUT ARGS ====================
+        # -ss, -copyts, -start_at_zero ile PTS kaydırma yapmadan başlat
+        # -re SADECE canlı akış hızını korumak için, -ss ile çakışmasın
+        base_input = [
             '-thread_queue_size', '1024',
             '-headers', headers_arg,
             '-user_agent', STREAM_USER_AGENT,
@@ -297,9 +291,12 @@ def start_m3u_stream():
             '-probesize', '10000000',
         ]
 
-        ss_arg = ['-ss', str(last_seconds)] if last_seconds > 0 else []
+        # SENKRON İÇİN KRİTİK: -ss + -copyts + -start_at_zero birlikte
+        if last_seconds > 0:
+            seek_args = ['-ss', str(last_seconds), '-copyts', '-start_at_zero']
+        else:
+            seek_args = []
 
-        # ============ ÇİFT LİNK / TEK LİNK ============
         is_dual_input = ";" in target_stream_url
 
         if is_dual_input:
@@ -307,13 +304,15 @@ def start_m3u_stream():
             video_url = video_url.strip()
             audio_url = audio_url.strip()
 
-            input_args = reconnect_args + ss_arg + ['-re', '-i', video_url] + \
-                         reconnect_args + ss_arg + ['-re', '-i', audio_url]
+            input_args = (
+                base_input + seek_args + ['-re', '-i', video_url]
+                + base_input + seek_args + ['-re', '-i', audio_url]
+            )
             probe_url = video_url
         else:
-            input_args = reconnect_args + ss_arg + ['-re', '-i', target_stream_url]
+            input_args = base_input + seek_args + ['-re', '-i', target_stream_url]
             probe_url = target_stream_url
-        # =============================================
+        # ====================================================
 
         film_duration = get_stream_duration(probe_url)
         if film_duration is not None:
@@ -322,19 +321,19 @@ def start_m3u_stream():
             print("⚠️ Süre tespit edilemedi.")
 
         has_logo = os.path.exists('logo.png') and os.path.getsize('logo.png') > 0
-        has_flag = False  # Sağ üst bayrak kapalı
+        has_flag = False
 
         overlay_inputs = []
         next_input_index = 2 if is_dual_input else 1
 
-        # ================= VIDEO + AUDIO FILTER ZİNCİRİ =================
-        # Video zinciri (PTS sıfırlama + ölçek + fps)
+        # ================= VIDEO + AUDIO FILTER =================
+        # fps zorlaması YOK — kaynak fps'i korunur (senkron bozulmasın)
         filter_steps = [
             '[0:v]setpts=PTS-STARTPTS,scale=1920:1080:force_original_aspect_ratio=decrease,'
-            'pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,fps=30[main_v]'
+            'pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black[main_v]'
         ]
 
-        # Audio zinciri (PTS sıfırlama + async resample — senkron için kritik)
+        # Audio: PTS sıfırla, async resample ile videoya hizala
         audio_input_idx = 1 if is_dual_input else 0
         filter_steps.append(
             f'[{audio_input_idx}:a:0]asetpts=PTS-STARTPTS,'
@@ -343,7 +342,6 @@ def start_m3u_stream():
 
         last_stream = '[main_v]'
 
-        # Logo (sol üst)
         if has_logo:
             logo_idx = next_input_index
             overlay_inputs.extend(['-i', 'logo.png'])
@@ -352,7 +350,6 @@ def start_m3u_stream():
             filter_steps.append(f'{last_stream}[logo]overlay=55:55[v_logo]')
             last_stream = '[v_logo]'
 
-        # Bayrak (sağ üst - kapalı)
         if has_flag:
             flag_idx = next_input_index
             overlay_inputs.extend(['-i', 'flag.png'])
@@ -392,25 +389,25 @@ def start_m3u_stream():
         filter_str = ";".join(filter_steps)
         if last_stream != '[v]':
             filter_str += f";{last_stream}null[v]"
-        # ==================================================================
+        # ========================================================
 
         command = [
             'ffmpeg'
         ] + input_args + overlay_inputs + [
             '-filter_complex', filter_str,
             '-map', '[v]',
-            '-map', '[main_a]',              # ← Audio filter çıkışı (senkron)
+            '-map', '[main_a]',
             '-c:v', 'libx264',
             '-preset', 'veryfast',
             '-pix_fmt', 'yuv420p',
-            '-r', '30',
+            # -r ZORLAMASI YOK — kaynak fps korunur
             '-b:v', '2000k',
             '-maxrate', '2000k',
             '-bufsize', '4000k',
             '-g', '60',
             '-fflags', '+genpts+igndts',
-            '-avoid_negative_ts', 'make_zero',
-            '-fps_mode', 'cfr',              # -vsync cfr yerine (yeni FFmpeg)
+            # -avoid_negative_ts SENKRON İÇİN KALDIRILDI
+            '-fps_mode', 'passthrough',          # fps dönüşümü yapma
             '-max_muxing_queue_size', '9999',
             '-max_interleave_delta', '0',
             '-c:a', 'aac',
