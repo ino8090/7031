@@ -303,7 +303,7 @@ def start_m3u_stream():
             remaining_expr = f"{total_duration_sec}-{last_seconds}-pts*TB"
             time_drawtext = (
                 f"drawtext=fontfile='{BOLD_FONT_PATH}':"
-                f"text='\\ %{{eif\\:max(0\\,{remaining_expr})/3600\\:d\\:2}}\\\\:%{{eif\\:mod(max(0\\,{remaining_expr})/60\\,60)\\:d\\:2}}\\\\:%{{eif\\:mod(max(0\\,{remaining_expr})\\,60)\\:d\\:2}}':"
+                f"text='Kalan Süre\\: %{{eif\\:max(0\\,{remaining_expr})/3600\\:d\\:2}}\\\\:%{{eif\\:mod(max(0\\,{remaining_expr})/60\\,60)\\:d\\:2}}\\\\:%{{eif\\:mod(max(0\\,{remaining_expr})\\,60)\\:d\\:2}}':"
                 f"fontcolor=white@{TEXT_OPACITY}:fontsize=18:"
                 f"x=20:y=h-th-20"
             )
@@ -311,7 +311,7 @@ def start_m3u_stream():
             # Süre çekilemezse (Canlı Akış vb.) Geçen Süreyi Göster
             time_drawtext = (
                 f"drawtext=fontfile='{BOLD_FONT_PATH}':"
-                f"text='\\ %{{pts\\:gmtime\\:0\\:%H\\\\\\:%M\\\\\\:%S}}':"
+                f"text='Geçen Süre\\: %{{pts\\:gmtime\\:0\\:%H\\\\\\:%M\\\\\\:%S}}':"
                 f"fontcolor=white@{TEXT_OPACITY}:fontsize=18:"
                 f"x=20:y=h-th-20"
             )
