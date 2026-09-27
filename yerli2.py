@@ -260,9 +260,8 @@ def start_m3u_stream():
         )
 
         # ============================================================
-        # SENKRON İÇİN ÖZEL INPUT ARGS
-        # -ss input'ta YOK (senkronu bozuyor)
-        # -ss yerine "-t" ile başlangıç atlanacak
+        # INPUT ARGS — HIZLI BAŞLANGIÇ İÇİN -ss INPUT'TA
+        # Senkron için: -ss input'ta, ama PTS reset output'ta
         # ============================================================
         base_input = [
             '-thread_queue_size', '2048',
@@ -281,6 +280,13 @@ def start_m3u_stream():
             '-rw_timeout', '20000000',
         ]
 
+        # -ss INPUT'ta (hızlı) — keyframe'e atlar
+        # -copyts YOK, -start_at_zero YOK → PTS reset output'ta yapılacak
+        if last_seconds > 0:
+            seek_args = ['-ss', str(last_seconds)]
+        else:
+            seek_args = []
+
         is_dual_input = ";" in target_stream_url
 
         if is_dual_input:
@@ -288,12 +294,12 @@ def start_m3u_stream():
             video_url = video_url.strip()
             audio_url = audio_url.strip()
             input_args = (
-                base_input + ['-i', video_url]
-                + base_input + ['-i', audio_url]
+                base_input + seek_args + ['-re', '-i', video_url]
+                + base_input + seek_args + ['-re', '-i', audio_url]
             )
             probe_url = video_url
         else:
-            input_args = base_input + ['-i', target_stream_url]
+            input_args = base_input + seek_args + ['-re', '-i', target_stream_url]
             probe_url = target_stream_url
         # ============================================================
 
@@ -310,17 +316,17 @@ def start_m3u_stream():
         next_input_index = 2 if is_dual_input else 1
 
         # ============================================================
-        # SENKRON İÇİN ÖZEL FILTER ZİNCİRİ
-        # Video: PTS sıfırla → scale → pad (fps zorlaması YOK)
-        # Audio: PTS sıfırla → aresample (async kaldırıldı, sadece PTS reset)
+        # FILTER ZİNCİRİ — PTS RESET BURADA (senkron için kritik)
         # ============================================================
+        # Video: setpts=PTS-STARTPTS → 0'dan başlat
+        # Audio: asetpts=PTS-STARTPTS → 0'dan başlat
+        # İkisi de aynı referans → SENKRON
         filter_steps = [
             '[0:v]setpts=PTS-STARTPTS,scale=1920:1080:force_original_aspect_ratio=decrease,'
             'pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black[main_v]'
         ]
 
         audio_input_idx = 1 if is_dual_input else 0
-        # aresample async KULLANMA — sadece PTS sıfırla (senkronu bozuyor)
         filter_steps.append(
             f'[{audio_input_idx}:a:0]asetpts=PTS-STARTPTS[main_a]'
         )
@@ -369,17 +375,13 @@ def start_m3u_stream():
         # ============================================================
 
         # ============================================================
-        # SENKRON İÇİN ÖZEL OUTPUT ARGS
-        # -ss BURADA (input seek yerine output seek) — senkronu bozmaz
-        # -copyts + -start_at_zero + -avoid_negative_ts make_zero
+        # OUTPUT ARGS — PTS RESET BURADA YAPILIR (asenkron yok)
         # ============================================================
-        output_seek = ['-ss', str(last_seconds)] if last_seconds > 0 else []
-
         command = [
             'ffmpeg',
             '-hide_banner',
             '-loglevel', 'warning',
-        ] + input_args + overlay_inputs + output_seek + [
+        ] + input_args + overlay_inputs + [
             '-filter_complex', filter_str,
             '-map', '[v]',
             '-map', '[main_a]',
@@ -390,16 +392,14 @@ def start_m3u_stream():
             '-maxrate', '2000k',
             '-bufsize', '4000k',
             '-g', '60',
-            # SENKRON: fps_mode cfr + -r 30 (output tarafında)
+            # Senkron: sabit fps
             '-r', '30',
             '-fps_mode', 'cfr',
-            # SENKRON: PTS reset ve negatif timestamp düzeltme
-            '-copyts',
-            '-start_at_zero',
+            # Senkron: PTS reset ve negatif timestamp düzeltme
             '-avoid_negative_ts', 'make_zero',
-            # SENKRON: muxer'a A/V arası max 1ms tolerans
+            # Senkron: muxer interleave 10ms (çok sıkı değil, çok gevşek değil)
             '-max_muxing_queue_size', '9999',
-            '-max_interleave_delta', '1',
+            '-max_interleave_delta', '10000',
             # Audio
             '-c:a', 'aac',
             '-b:a', '128k',
@@ -408,12 +408,11 @@ def start_m3u_stream():
             # RTMP
             '-f', 'flv',
             '-flvflags', 'no_duration_filesize',
-            '-rtmp_live', 'live',
             RTMP_SERVER
         ]
 
-        print("▶ FFmpeg başlatıldı (senkron modu)...")
-        print(f"   Başlangıç saniyesi (output seek): {last_seconds}")
+        print("▶ FFmpeg başlatıldı...")
+        print(f"   Input seek: {last_seconds} sn")
         process = subprocess.Popen(
             command,
             stderr=subprocess.PIPE,
