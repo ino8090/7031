@@ -293,7 +293,7 @@ def start_m3u_stream():
         # Sağ Alt Köşe: Film Adı
         title_drawtext = (
             f"drawtext=textfile='title.txt':reload=1:fontfile='{BOLD_FONT_PATH}':"
-            f"fontcolor=white@{TEXT_OPACITY}:fontsize=:19"
+            f"fontcolor=white@{TEXT_OPACITY}:fontsize=19:"
             f"x=w-tw-20:y=h-th-20"
         )
 
