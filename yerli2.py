@@ -19,13 +19,14 @@ M3U_URL = os.getenv("M3U_URL", "https://raw.githubusercontent.com/ino8090/0101/r
 LOGO_URL = os.getenv("LOGO_URL", "https://raw.githubusercontent.com/ino8090/0101/refs/heads/main/1787745128505.png")
 FLAG_URL = os.getenv("FLAG_URL", "https://raw.githubusercontent.com/ino8090/0101/refs/heads/main/file_00000000eae88246b13a221f896ea385.png")
 
-STATE_FILE_NAME = os.getenv("STATE_FILE_NAME", "state_maxyerli.json")
+STATE_FILE_NAME = os.getenv("STATE_FILE_NAME", "state_yerli.json")
 GITHUB_STEP_SUMMARY = os.getenv("GITHUB_STEP_SUMMARY")
 
 STREAM_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
-# ===================== YENİ: RESOLVER =====================
+# ===================== RESOLVER =====================
 STREAM_EXTENSIONS = ('.m3u8', '.mp4', '.mpd', '.ts', '.mkv', '.webm')
+
 
 def resolve_stream_url(url, timeout=15):
     """
@@ -39,7 +40,7 @@ def resolve_stream_url(url, timeout=15):
         'Accept': '*/*',
     }
 
-    # 1) Zaten stream linkiyse dokunma
+    # Zaten stream linkiyse dokunma
     if any(url.lower().split('?')[0].endswith(ext) for ext in STREAM_EXTENSIONS):
         return url
 
@@ -47,7 +48,7 @@ def resolve_stream_url(url, timeout=15):
         r = requests.get(url, headers=headers, timeout=timeout, allow_redirects=True)
         final_url = r.url
 
-        # 2) Redirect sonrası stream'e düştüyse
+        # Redirect sonrası stream'e düştüyse
         if any(final_url.lower().split('?')[0].endswith(ext) for ext in STREAM_EXTENSIONS):
             print(f"✅ Redirect ile stream bulundu: {final_url}")
             return final_url
@@ -55,7 +56,6 @@ def resolve_stream_url(url, timeout=15):
         html = r.text
         base = f"{urlparse(final_url).scheme}://{urlparse(final_url).netloc}"
 
-        # 3) Sayfa içinde stream URL'i ara
         patterns = [
             r'["\'](https?://[^"\']+\.m3u8[^"\']*)["\']',
             r'["\'](https?://[^"\']+\.mp4[^"\']*)["\']',
@@ -74,25 +74,6 @@ def resolve_stream_url(url, timeout=15):
                     found = urljoin(base, found)
                 print(f"✅ HTML içinden stream bulundu: {found}")
                 return found
-
-        # 4) JSON API endpoint'i olabilir mi? (vixolity tipi)
-        api_match = re.search(r'["\'](/api/[^"\']+)["\']', html)
-        if api_match:
-            api_url = urljoin(base, api_match.group(1))
-            print(f"🔎 API endpoint denenecek: {api_url}")
-            try:
-                ar = requests.get(api_url, headers=headers, timeout=timeout)
-                aj = ar.text
-                for pat in patterns:
-                    m = re.search(pat, aj, re.IGNORECASE)
-                    if m:
-                        found = m.group(1)
-                        if found.startswith('/'):
-                            found = urljoin(base, found)
-                        print(f"✅ API'den stream bulundu: {found}")
-                        return found
-            except Exception as e:
-                print(f"⚠️ API deneme hatası: {e}")
 
         print(f"⚠️ Stream URL'i bulunamadı, orijinal deneniyor: {url}")
         return url
@@ -149,7 +130,7 @@ def get_stream_duration(url):
         cmd = [
             'ffprobe', '-v', 'error',
             '-user_agent', STREAM_USER_AGENT,
-            '-headers', f'Referer: https://ha.vixolity.com/\r\n',
+            '-headers', 'Referer: https://ha.vixolity.com/\r\n',
             '-show_entries', 'format=duration',
             '-of', 'default=noprint_wrappers=1:nokey=1',
             url
@@ -274,7 +255,7 @@ def start_m3u_stream():
         raw_url = current_item["url"]
         film_title = current_item["title"]
 
-        # ============ YENİ: HTML → m3u8 çözümleme ============
+        # HTML → m3u8 çözümleme
         print(f"🔍 Kaynak çözümleniyor: {raw_url}")
         target_stream_url = resolve_stream_url(raw_url)
         print(f"🎯 Kullanılacak stream: {target_stream_url}")
@@ -320,7 +301,7 @@ def start_m3u_stream():
 
         ss_arg = ['-ss', str(last_seconds)] if last_seconds > 0 else []
 
-        # Çift link (video;audio) kontrolü
+        # ============ ÇİFT LİNK / TEK LİNK + AUDIO MAP DÜZELTİLDİ ============
         if ";" in target_stream_url:
             video_url, audio_url = target_stream_url.split(";", 1)
             video_url = video_url.strip()
@@ -328,14 +309,20 @@ def start_m3u_stream():
 
             input_args = reconnect_args + ss_arg + ['-re', '-i', video_url] + \
                          reconnect_args + ss_arg + ['-re', '-i', audio_url]
-            audio_map = ['-map', '1:a:0']
+
+            # SADECE audio input'un ilk sesi; video input'un sesi reddedilir.
+            # "-map -0:a" olmadan FLV muxer "at most one audio stream" hatası verir.
+            audio_map = ['-map', '1:a:0', '-map', '-0:a']
             next_input_index = 2
             probe_url = video_url
         else:
             input_args = reconnect_args + ss_arg + ['-re', '-i', target_stream_url]
-            audio_map = ['-map', '0:a?']
+
+            # SADECE ilk ses track'i. HLS çoklu audio track gönderirse FLV patlar.
+            audio_map = ['-map', '0:a:0']
             next_input_index = 1
             probe_url = target_stream_url
+        # ====================================================================
 
         film_duration = get_stream_duration(probe_url)
         if film_duration is not None:
@@ -344,11 +331,10 @@ def start_m3u_stream():
             print("⚠️ Süre tespit edilemedi.")
 
         has_logo = os.path.exists('logo.png') and os.path.getsize('logo.png') > 0
-        has_flag = False  # sağ üst bayrak kapalı
+        has_flag = False  # Sağ üst bayrak kapalı
 
         overlay_inputs = []
         filter_steps = [
-            # YENİ: setpts=PTS-STARTPTS senkron için kritik
             '[0:v]setpts=PTS-STARTPTS,scale=1920:1080:force_original_aspect_ratio=decrease,'
             'pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,fps=30[main]'
         ]
@@ -416,17 +402,16 @@ def start_m3u_stream():
             '-maxrate', '2000k',
             '-bufsize', '4000k',
             '-g', '60',
-            # ============ YENİ: 234 hatası önleyici ayarlar ============
             '-fflags', '+genpts+igndts',
             '-avoid_negative_ts', 'make_zero',
             '-vsync', 'cfr',
             '-async', '1',
             '-max_muxing_queue_size', '9999',
             '-max_interleave_delta', '0',
-            # ==========================================================
             '-c:a', 'aac',
             '-b:a', '128k',
             '-ar', '44100',
+            '-ac', '2',                      # ← Stereo zorla (FLV 5.1 kabul etmez)
             '-f', 'flv',
             RTMP_SERVER
         ]
@@ -476,7 +461,6 @@ def start_m3u_stream():
             last_seconds = 0
             update_local_state(current_index, 0)
         else:
-            # ============ YENİ: Hata loglarını göster ============
             print(f"⚠️ Yayın koptu (Return Code: {process.returncode})")
             print("---- FFmpeg son satırlar ----")
             for l in last_lines:
