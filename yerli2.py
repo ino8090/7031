@@ -11,12 +11,12 @@ import requests
 
 # ===================== AYARLAR =====================
 RTMP_URL = "rtmp://ssh101.bozztv.com:1935/ssh101"
-STREAM_KEY = os.getenv("STREAM_KEY") or "maxyerli"
+STREAM_KEY = os.getenv("STREAM_KEY") or "maxpremier"
 RTMP_SERVER = f"{RTMP_URL}/{STREAM_KEY}"
 
-M3U_URL = os.getenv("M3U_URL", "https://raw.githubusercontent.com/ino8090/0101/refs/heads/main/yerli2.m3u")
-LOGO_URL = os.getenv("LOGO_URL", "https://raw.githubusercontent.com/ino8090/0101/refs/heads/main/1787745128505.png")
-FLAG_URL = os.getenv("FLAG_URL", "https://raw.githubusercontent.com/ino8090/0101/refs/heads/main/file_00000000eae88246b13a221f896ea385.png")
+M3U_URL = os.getenv("M3U_URL") or "https://raw.githubusercontent.com/ino8090/0101/refs/heads/main/yerli2.m3u"
+LOGO_URL = os.getenv("LOGO_URL") or "https://raw.githubusercontent.com/ino8090/0101/refs/heads/main/1787745128505.png.png"
+LOGO2_URL = os.getenv("LOGO2_URL") or "https://raw.githubusercontent.com/ino8090/0101/refs/heads/main/file_00000000eae88246b13a221f896ea385.png"
 
 STATE_FILE_NAME = os.getenv("STATE_FILE_NAME", "state_maxyerli.json")
 GITHUB_STEP_SUMMARY = os.getenv("GITHUB_STEP_SUMMARY")
@@ -90,7 +90,7 @@ def find_bold_fontfile():
 
 
 def get_local_state():
-    """Yerel state_maxyerli.json dosyasından son durumu okur."""
+    """Yerel state dosyasından son durumu okur."""
     if os.path.exists(STATE_FILE_NAME):
         try:
             with open(STATE_FILE_NAME, "r", encoding="utf-8") as f:
@@ -107,7 +107,7 @@ def get_local_state():
 
 
 def update_local_state(index, seconds):
-    """Son konumu yerel state_maxyerli.json dosyasına kaydeder."""
+    """Son konumu yerel state dosyasını kaydeder."""
     try:
         data = {"last_index": int(index), "last_seconds": int(seconds)}
         with open(STATE_FILE_NAME, "w", encoding="utf-8") as f:
@@ -142,29 +142,28 @@ def get_m3u_playlist(m3u_url):
     return [{"url": m3u_url, "title": os.path.basename(m3u_url)}]
 
 
-def download_assets():
-    """Logo ve Türk Bayrağı görsellerini indirir."""
+def download_logo():
     headers = {'User-Agent': STREAM_USER_AGENT}
     
-    # Logo indirme
+    # 1. Logo İndir
     try:
-        res_logo = requests.get(LOGO_URL, headers=headers, timeout=15)
-        if res_logo.status_code == 200 and len(res_logo.content) > 0:
+        response = requests.get(LOGO_URL, headers=headers, timeout=15)
+        if response.status_code == 200 and len(response.content) > 0:
             with open('logo.png', 'wb') as f:
-                f.write(res_logo.content)
-            print("✅ Logo başarıyla indirildi.")
+                f.write(response.content)
+            print("✅ 1. Logo başarıyla indirildi.")
     except Exception as e:
-        print(f"⚠️ Logo indirme hatası: {e}")
+        print(f"⚠️ 1. Logo indirme hatası: {e}")
 
-    # Bayrak indirme
+    # 2. Logo İndir
     try:
-        res_flag = requests.get(FLAG_URL, headers=headers, timeout=15)
-        if res_flag.status_code == 200 and len(res_flag.content) > 0:
-            with open('flag.png', 'wb') as f:
-                f.write(res_flag.content)
-            print("✅ Türk Bayrağı başarıyla indirildi.")
+        response2 = requests.get(LOGO2_URL, headers=headers, timeout=15)
+        if response2.status_code == 200 and len(response2.content) > 0:
+            with open('logo2.png', 'wb') as f:
+                f.write(response2.content)
+            print("✅ 2. Logo başarıyla indirildi.")
     except Exception as e:
-        print(f"⚠️ Bayrak indirme hatası: {e}")
+        print(f"⚠️ 2. Logo indirme hatası: {e}")
 
 
 def print_dashboard(title, index, playlist_len, seconds, status="🟢 Yayında"):
@@ -181,7 +180,7 @@ def write_step_summary(title, index, playlist_len, seconds, status="🟢 Yayınd
         return
     try:
         content = (
-            "## 📺 Canlı Yayın Durumu (Maxyerli)\n\n"
+            "## 📺 Canlı Yayın Durumu (Maxpremier)\n\n"
             "| Alan | Değer |\n"
             "|---|---|\n"
             f"| 🎬 Şu an oynayan içerik | {title} |\n"
@@ -198,12 +197,12 @@ def write_step_summary(title, index, playlist_len, seconds, status="🟢 Yayınd
 
 def start_m3u_stream():
     print(f"🔧 Kullanılan M3U   : {M3U_URL}")
-    print(f"🔧 Kullanılan Logo  : {LOGO_URL}")
-    print(f"🔧 Kullanılan Bayrak: {FLAG_URL}")
+    print(f"🔧 Kullanılan Logo 1: {LOGO_URL}")
+    print(f"🔧 Kullanılan Logo 2: {LOGO2_URL}")
     print(f"🔧 State dosyası    : {STATE_FILE_NAME}")
     print(f"🔧 RTMP hedefi      : {RTMP_SERVER}")
 
-    download_assets()
+    download_logo()
 
     current_index, last_seconds = get_local_state()
 
@@ -222,17 +221,17 @@ def start_m3u_stream():
         film_title = current_item["title"]
 
         print("=" * 60)
-        print("📺 Maxyerli Canlı Aktarım Yayını (1080p 30fps - 2000k) Başlatılıyor")
+        print("📺 Maxpremier Canlı Aktarım Yayını (1080p 30fps - 2000k) Başlatılıyor")
         print(f"🎬 Oynatılan İçerik  : {film_title}")
         print(f"⏱️ Başlangıç Saniyesi: {last_seconds}")
         print(f"🚀 Hedef RTMP       : {RTMP_SERVER}")
 
         headers_arg = f"User-Agent: {STREAM_USER_AGENT}\r\n"
 
-        # Sadece saniye 0'dan büyükse -ss parametresini ekle (Exit Code 8 çökmesini önler)
+        # Sadece saniye 0'dan büyükse -ss parametresini ekle
         ss_arg = ['-ss', str(last_seconds)] if last_seconds > 0 else []
 
-        # Dayanıklı HTTP bağlantı argümanları
+        # İkinci koddaki sorunsuz çalışan bağlantı parametreleri
         reconnect_args = [
             '-headers', headers_arg,
             '-reconnect', '1',
@@ -268,43 +267,23 @@ def start_m3u_stream():
         if film_duration is not None:
             print(f"⏳ Tespit edilen film süresi: {format_hms(film_duration)}")
         else:
-            print("⚠️ Film süresi tespit edilemedi, 'kalan süre' gösterilmeyecek.")
+            print("⚠️ Film süresi tespit edilemedi, 'sonraki filme kalan süre' gösterilmeyecek.")
 
         print("=" * 60)
 
         print_dashboard(film_title, current_index, len(playlist), last_seconds, status="🟡 Başlatılıyor")
         write_step_summary(film_title, current_index, len(playlist), last_seconds, status="🟡 Başlatılıyor")
 
-        has_logo = os.path.exists('logo.png') and os.path.getsize('logo.png') > 0
-        has_flag = os.path.exists('flag.png') and os.path.getsize('flag.png') > 0
-        has_flag = False  # Sağ üstteki logo (bayrak) kaldırıldı, ekrana eklenmiyor
+        has_logo1 = os.path.exists('logo.png') and os.path.getsize('logo.png') > 0
+        has_logo2 = os.path.exists('logo2.png') and os.path.getsize('logo2.png') > 0
+        has_logo2 = False  # Sağ üstteki logo kaldırıldı, ekrana eklenmiyor
 
-        overlay_inputs = []
-        filter_steps = [
-            '[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,'
-            'pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,fps=30[main]'
-        ]
-        last_stream = '[main]'
+        logo_inputs = []
+        filter_str = ""
 
-        # Logo İşleme (Sol Üst)
-        if has_logo:
-            logo_idx = next_input_index
-            overlay_inputs.extend(['-i', 'logo.png'])
-            next_input_index += 1
-            filter_steps.append(f'[{logo_idx}:v]scale=-2:80[logo]')
-            filter_steps.append(f'{last_stream}[logo]overlay=55:55[v_logo]')
-            last_stream = '[v_logo]'
+        current_logo_idx = next_input_index
 
-        # Bayrak İşleme (Sağ Üst)
-        if has_flag:
-            flag_idx = next_input_index
-            overlay_inputs.extend(['-i', 'flag.png'])
-            next_input_index += 1
-            filter_steps.append(f'[{flag_idx}:v]scale=60:-2[flag]')
-            filter_steps.append(f'{last_stream}[flag]overlay=main_w-overlay_w-60:60[v_flag]')
-            last_stream = '[v_flag]'
-
-        # --- SAĞ ALT: FİLM ADI / SOL ALT: (GERÇEK HESAPLANMIŞ) KALAN SÜRE ---
+        # --- SAĞ ALT: FİLM ADI / SOL ALT: (GERÇEK HESAPLANMIŞ) KALAN SÜRE İÇİN DRAWTEXT FİLTRELERİ ---
         escaped_title = escape_drawtext(film_title)
 
         bold_font_path = find_bold_fontfile()
@@ -336,17 +315,55 @@ def start_m3u_stream():
                 f"x=30:y=h-th-30"
             )
 
-        filter_steps.append(f'{last_stream}{drawtext_title},{drawtext_remaining}[v]')
-        last_stream = '[v]'
+        drawtext_chain = f"[vbase]{drawtext_title},{drawtext_remaining}[v]"
 
-        # Son filtre çıktısını [v] adıyla tanımlama
-        filter_str = ";".join(filter_steps)
-        if last_stream != '[v]':
-            filter_str += f";{last_stream}null[v]"
+        if has_logo1 and has_logo2:
+            logo_inputs = ['-i', 'logo.png', '-i', 'logo2.png']
+            logo1_idx = current_logo_idx
+            logo2_idx = current_logo_idx + 1
+
+            filter_str = (
+                '[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,'
+                'pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,fps=30[main];'
+                f'[{logo1_idx}:v]scale=-2:80[logo1];'
+                f'[{logo2_idx}:v]scale=-2:20[logo2];'
+                '[main][logo1]overlay=50:50[tmp];'
+                '[tmp][logo2]overlay=main_w-overlay_w-50:50[vbase];'
+                f'{drawtext_chain}'
+            )
+        elif has_logo1:
+            logo_inputs = ['-i', 'logo.png']
+            logo1_idx = current_logo_idx
+
+            filter_str = (
+                '[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,'
+                'pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,fps=30[main];'
+                f'[{logo1_idx}:v]scale=-2:80[logo1];'
+                '[main][logo1]overlay=50:50[vbase];'
+                f'{drawtext_chain}'
+            )
+        elif has_logo2:
+            logo_inputs = ['-i', 'logo2.png']
+            logo2_idx = current_logo_idx
+
+            filter_str = (
+                '[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,'
+                'pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,fps=30[main];'
+                f'[{logo2_idx}:v]scale=-2:20[logo2];'
+                '[main][logo2]overlay=main_w-overlay_w-50:50[vbase];'
+                f'{drawtext_chain}'
+            )
+        else:
+            logo_inputs = []
+            filter_str = (
+                '[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,'
+                'pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,fps=30[vbase];'
+                f'{drawtext_chain}'
+            )
 
         command = [
             'ffmpeg'
-        ] + input_args + overlay_inputs + [
+        ] + input_args + logo_inputs + [
             '-filter_complex', filter_str,
             '-map', '[v]'
         ] + audio_map + [
