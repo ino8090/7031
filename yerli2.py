@@ -235,8 +235,10 @@ def start_m3u_stream():
         )
 
         # ============================================================
-        # HİÇBİR MÜDAHALE YOK — kaynak ne verirse o
+        # GİRDİ ARGÜMANLARI (PTS ve Ağ Senkronizasyonu)
         # ============================================================
+        # -re kaldırıldı (canlı HTTP akışlarında tampon kaymasını önlemek için)
+        # -fflags +genpts+discardcorrupt eklendi (kırık zaman damgalarını onarır)
         input_args = [
             '-thread_queue_size', '2048',
             '-headers', headers_arg,
@@ -249,7 +251,7 @@ def start_m3u_stream():
             '-multiple_requests', '1',
             '-analyzeduration', '10000000',
             '-probesize', '10000000',
-            '-re',
+            '-fflags', '+genpts+discardcorrupt',
             '-i', target_stream_url,
         ]
 
@@ -263,9 +265,9 @@ def start_m3u_stream():
         has_logo = os.path.exists('logo.png') and os.path.getsize('logo.png') > 0
 
         overlay_inputs = []
+        # FPS 25'e sabitleniyor ve zaman damgaları sıfırlanıyor (PTS-STARTPTS)
         filter_steps = [
-            # Sadece ölçekle + pad. fps zorlaması yok. PTS reset yok.
-            '[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,'
+            '[0:v]fps=25,setpts=PTS-STARTPTS,scale=1920:1080:force_original_aspect_ratio=decrease,'
             'pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black[main]'
         ]
 
@@ -313,9 +315,10 @@ def start_m3u_stream():
             filter_str += f";{last_stream}null[v]"
 
         # ============================================================
-        # ÇIKIŞ — ses ve görüntü KAYNAKTAN GELDİĞİ GİBİ geçer
-        # Ses için hiçbir filter yok, -c:a aac ile sadece encode edilir
+        # ÇIKIŞ - Ses ve Video Senkronizasyon Filtresi
         # ============================================================
+        # -af aresample=async=1 eklendi: Ses akışını dinamik olarak video süresiyle kilitler.
+        # -g 50 eklendi: Keyframe aralığını 2 saniyeye sabitleyerek RTMP yayın akışını korur.
         command = [
             'ffmpeg',
             '-hide_banner',
@@ -323,14 +326,16 @@ def start_m3u_stream():
         ] + input_args + overlay_inputs + [
             '-filter_complex', filter_str,
             '-map', '[v]',
-            '-map', '0:a:0',                # ← kaynaktaki ilk ses, olduğu gibi
+            '-map', '0:a:0',
             '-c:v', 'libx264',
             '-preset', 'veryfast',
             '-pix_fmt', 'yuv420p',
+            '-g', '50',
             '-b:v', '2000k',
             '-maxrate', '2000k',
             '-bufsize', '4000k',
             '-c:a', 'aac',
+            '-af', 'aresample=async=1:min_hard_comp=0.100000:first_pts=0',
             '-b:a', '128k',
             '-ar', '44100',
             '-ac', '2',
@@ -338,7 +343,7 @@ def start_m3u_stream():
             RTMP_SERVER
         ]
 
-        print("▶ FFmpeg başlatıldı (kaynak ne verirse o)...")
+        print("▶ FFmpeg başlatıldı (Senkronizasyon korumalı)...")
         process = subprocess.Popen(
             command,
             stderr=subprocess.PIPE,
