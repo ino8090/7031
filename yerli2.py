@@ -170,7 +170,7 @@ def get_m3u_playlist(m3u_url):
     return [{"url": m3u_url, "title": os.path.basename(m3u_url)}]
 
 
-def print_dashboard(title, index, playlist_len, seconds, status="🟢 Yayında"):
+def print_dashboard(title, index, playlist_len, seconds, status="🟢 Yayında (Senkronize)"):
     print("┌" + "─" * 58 + "┐")
     print(f"│ 🎬 İçerik         : {title[:36]:<36} │")
     print(f"│ 🔢 Sıra           : {index + 1}/{playlist_len:<32} │")
@@ -179,7 +179,7 @@ def print_dashboard(title, index, playlist_len, seconds, status="🟢 Yayında")
     print("└" + "─" * 58 + "┘")
 
 
-def write_step_summary(title, index, playlist_len, seconds, status="🟢 Yayında"):
+def write_step_summary(title, index, playlist_len, seconds, status="🟢 Yayında (Senkronize)"):
     if not GITHUB_STEP_SUMMARY:
         return
     try:
@@ -255,7 +255,7 @@ def start_m3u_stream():
         ss_arg = ['-ss', str(last_seconds)] if last_seconds > 0 else []
 
         # ============================================================
-        # GÜÇLENDİRİLMİŞ GİRDİ AYARLARI (İkinci Kodun Kararlılığı)
+        # GİRDİ OPSİYONLARI VE SENKRONİZASYON BAYRAKLARI
         # ============================================================
         input_options = [
             '-headers', headers_arg,
@@ -269,7 +269,7 @@ def start_m3u_stream():
             '-reconnect_streamed', '1',
             '-reconnect_delay_max', '10',
             '-rw_timeout', '10000000',
-            '-fflags', '+genpts+discardcorrupt'
+            '-fflags', '+genpts+discardcorrupt+igndts'
         ]
 
         if ";" in target_stream_url:
@@ -281,11 +281,11 @@ def start_m3u_stream():
                 input_options + ss_arg + ['-re', '-i', video_url] +
                 input_options + ss_arg + ['-re', '-i', audio_url]
             )
-            audio_map = ['-map', '1:a:0?']
+            audio_stream_map = '1:a:0?'
             logo_input_index = 2
         else:
             input_args = input_options + ss_arg + ['-re', '-i', target_stream_url]
-            audio_map = ['-map', '0:a:0?']
+            audio_stream_map = '0:a:0?'
             logo_input_index = 1
 
         film_duration = get_stream_duration(target_stream_url)
@@ -295,7 +295,11 @@ def start_m3u_stream():
         has_logo = os.path.exists('logo.png') and os.path.getsize('logo.png') > 0
 
         overlay_inputs = []
-        # PTS Sıfırlama + 25 FPS Sabitleme
+        
+        # ============================================================
+        # FİLTRE ZİNCİRİ: VİDEO VE SES SENKRONİZASYONUNU BİRLEŞTİRME
+        # ============================================================
+        # 1. Video PTS sıfırlama + FPS Kilitleme
         filter_steps = [
             '[0:v]fps=25,setpts=PTS-STARTPTS,scale=1920:1080:force_original_aspect_ratio=decrease,'
             'pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black[main]'
@@ -335,14 +339,14 @@ def start_m3u_stream():
             )
 
         filter_steps.append(f'{last_stream}{drawtext_title},{drawtext_remaining}[v]')
-        last_stream = '[v]'
+
+        # 2. Ses Senkronizasyon Filtresi (Milisaniyelik Kaymayı Önler)
+        filter_steps.append(f'[{audio_stream_map}]asetpts=PTS-STARTPTS,aresample=async=1000:min_hard_comp=0.100000:first_pts=0[a]')
 
         filter_str = ";".join(filter_steps)
-        if last_stream != '[v]':
-            filter_str += f";{last_stream}null[v]"
 
         # ============================================================
-        # SES VE VİDEO SENKRON KODLAMA (Kaymayı Birebir Önler)
+        # KUSURSUZ FFMPEG ÇIKTI KOMUTU
         # ============================================================
         command = [
             'ffmpeg',
@@ -350,8 +354,8 @@ def start_m3u_stream():
             '-loglevel', 'warning',
         ] + input_args + overlay_inputs + [
             '-filter_complex', filter_str,
-            '-map', '[v]'
-        ] + audio_map + [
+            '-map', '[v]',
+            '-map', '[a]',
             '-c:v', 'libx264',
             '-preset', 'veryfast',
             '-pix_fmt', 'yuv420p',
@@ -361,15 +365,15 @@ def start_m3u_stream():
             '-bufsize', '4000k',
             '-g', '50',
             '-c:a', 'aac',
-            '-af', 'aresample=async=1:min_hard_comp=0.100000:first_pts=0',
             '-b:a', '128k',
             '-ar', '44100',
             '-ac', '2',
+            '-flvflags', 'no_duration_filesize',
             '-f', 'flv',
             RTMP_SERVER
         ]
 
-        print("▶ FFmpeg başlatıldı (Senkronizasyon ve Donma Korumalı)...")
+        print("▶ FFmpeg başlatıldı (Milimetrik Ses/Görüntü Senkronize)...")
         process = subprocess.Popen(
             command,
             stderr=subprocess.PIPE,
@@ -399,15 +403,15 @@ def start_m3u_stream():
 
                     now = time.time()
 
-                    # Her 30 saniyede bir kaldığı konumu kaydet
+                    # Her 30 saniyede bir kaldığı konumu yerel dosyaya kaydet
                     if now - last_save_time > 30:
                         update_local_state(current_index, current_stream_seconds, raw_url)
                         last_save_time = now
 
-                    # Dashboard güncelle
+                    # Dashboard & Log güncelleme
                     if now - last_dashboard_time > 30:
-                        print_dashboard(film_title, current_index, len(playlist), current_stream_seconds, status="🟢 Yayında")
-                        write_step_summary(film_title, current_index, len(playlist), current_stream_seconds, status="🟢 Yayında")
+                        print_dashboard(film_title, current_index, len(playlist), current_stream_seconds, status="🟢 Yayında (Senkronize)")
+                        write_step_summary(film_title, current_index, len(playlist), current_stream_seconds, status="🟢 Yayında (Senkronize)")
                         last_dashboard_time = now
 
         if process.returncode == 0:
@@ -421,7 +425,7 @@ def start_m3u_stream():
         else:
             print(f"⚠️ Yayın koptu (Return Code: {process.returncode})")
             if stderr_tail:
-                print("🧾 FFmpeg son satırlar:")
+                print("🧾 FFmpeg son logları:")
                 for l in stderr_tail:
                     print(f"   {l}")
             write_step_summary(film_title, current_index, len(playlist), current_stream_seconds, status=f"🔴 Koptu (Hata: {process.returncode})")
