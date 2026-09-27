@@ -239,14 +239,18 @@ def start_m3u_stream():
         target_stream_url = resolve_stream_url(raw_url)
         print(f"🎯 Kullanılacak stream: {target_stream_url}")
 
-        if '.m3u8' in target_stream_url.lower():
-            if is_live_hls(target_stream_url):
-                print("🔴 Canlı HLS algılandı — başlangıç saniyesi sıfırlanıyor")
-                last_seconds = 0
+        # ============================================================
+        # ÖNEMLİ: -ss DEVRE DIŞI BIRAKILDI
+        # Sebep: Vixolity HLS sunucusu -ss ile verilen saniyeyi
+        # "End of file" ile kesiyor, paket sırası bozuluyor, 234 alıyoruz.
+        # Bu yüzden HER SEFERİNDE film BAŞTAN başlar (state sadece index için).
+        # ============================================================
+        last_seconds = 0
+        print("ℹ️ -ss devre dışı (Vixolity -ss'yi desteklemiyor) → film baştan başlar")
 
         print("=" * 60)
         print(f"🎬 {film_title}")
-        print(f"⏱️ Başlangıç: {last_seconds} sn")
+        print(f"⏱️ Başlangıç: 0 sn")
         print(f"🚀 RTMP: {RTMP_SERVER}")
         print("=" * 60)
 
@@ -259,19 +263,15 @@ def start_m3u_stream():
             "Origin: https://ha.vixolity.com\r\n"
         )
 
-        # ============================================================
-        # INPUT ARGS — HIZLI BAŞLANGIÇ İÇİN -ss INPUT'TA
-        # Senkron için: -ss input'ta, ama PTS reset output'ta
-        # ============================================================
+        # -ss YOK artık. Direkt stream açılır.
         base_input = [
             '-thread_queue_size', '2048',
             '-headers', headers_arg,
             '-user_agent', STREAM_USER_AGENT,
             '-reconnect', '1',
             '-reconnect_streamed', '1',
-            '-reconnect_delay_max', '10',
+            '-reconnect_delay_max', '5',
             '-reconnect_at_eof', '1',
-            '-live_start_index', '-3',
             '-http_persistent', '1',
             '-multiple_requests', '1',
             '-fflags', '+genpts+igndts+discardcorrupt',
@@ -280,13 +280,6 @@ def start_m3u_stream():
             '-rw_timeout', '20000000',
         ]
 
-        # -ss INPUT'ta (hızlı) — keyframe'e atlar
-        # -copyts YOK, -start_at_zero YOK → PTS reset output'ta yapılacak
-        if last_seconds > 0:
-            seek_args = ['-ss', str(last_seconds)]
-        else:
-            seek_args = []
-
         is_dual_input = ";" in target_stream_url
 
         if is_dual_input:
@@ -294,14 +287,13 @@ def start_m3u_stream():
             video_url = video_url.strip()
             audio_url = audio_url.strip()
             input_args = (
-                base_input + seek_args + ['-re', '-i', video_url]
-                + base_input + seek_args + ['-re', '-i', audio_url]
+                base_input + ['-re', '-i', video_url]
+                + base_input + ['-re', '-i', audio_url]
             )
             probe_url = video_url
         else:
-            input_args = base_input + seek_args + ['-re', '-i', target_stream_url]
+            input_args = base_input + ['-re', '-i', target_stream_url]
             probe_url = target_stream_url
-        # ============================================================
 
         film_duration = get_stream_duration(probe_url)
         if film_duration is not None:
@@ -316,11 +308,8 @@ def start_m3u_stream():
         next_input_index = 2 if is_dual_input else 1
 
         # ============================================================
-        # FILTER ZİNCİRİ — PTS RESET BURADA (senkron için kritik)
+        # FILTER ZİNCİRİ — PTS RESET (senkron için)
         # ============================================================
-        # Video: setpts=PTS-STARTPTS → 0'dan başlat
-        # Audio: asetpts=PTS-STARTPTS → 0'dan başlat
-        # İkisi de aynı referans → SENKRON
         filter_steps = [
             '[0:v]setpts=PTS-STARTPTS,scale=1920:1080:force_original_aspect_ratio=decrease,'
             'pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black[main_v]'
@@ -349,7 +338,7 @@ def start_m3u_stream():
         )
 
         if film_duration is not None:
-            remaining_expr = f"({film_duration:.3f}-{int(last_seconds)}-t)"
+            remaining_expr = f"({film_duration:.3f}-t)"
             hh_expr = f"trunc({remaining_expr}/3600)"
             mm_expr = f"trunc(mod({remaining_expr},3600)/60)"
             ss_expr = f"trunc(mod({remaining_expr},60))"
@@ -375,7 +364,7 @@ def start_m3u_stream():
         # ============================================================
 
         # ============================================================
-        # OUTPUT ARGS — PTS RESET BURADA YAPILIR (asenkron yok)
+        # OUTPUT ARGS — 234 hatasını önleyen kritik ayarlar
         # ============================================================
         command = [
             'ffmpeg',
@@ -388,18 +377,17 @@ def start_m3u_stream():
             '-c:v', 'libx264',
             '-preset', 'veryfast',
             '-pix_fmt', 'yuv420p',
+            '-r', '30',
             '-b:v', '2000k',
             '-maxrate', '2000k',
             '-bufsize', '4000k',
             '-g', '60',
-            # Senkron: sabit fps
-            '-r', '30',
-            '-fps_mode', 'cfr',
-            # Senkron: PTS reset ve negatif timestamp düzeltme
-            '-avoid_negative_ts', 'make_zero',
-            # Senkron: muxer interleave 10ms (çok sıkı değil, çok gevşek değil)
+            # ===== 234 HATASI İÇİN KRİTİK =====
+            '-max_interleave_delta', '0',       # ← hata mesajının önerdiği
             '-max_muxing_queue_size', '9999',
-            '-max_interleave_delta', '10000',
+            '-fflags', '+genpts+igndts',
+            '-avoid_negative_ts', 'disabled',   # ← make_zero yerine disabled
+            # ==================================
             # Audio
             '-c:a', 'aac',
             '-b:a', '128k',
@@ -411,8 +399,7 @@ def start_m3u_stream():
             RTMP_SERVER
         ]
 
-        print("▶ FFmpeg başlatıldı...")
-        print(f"   Input seek: {last_seconds} sn")
+        print("▶ FFmpeg başlatıldı (baştan, senkron modu)...")
         process = subprocess.Popen(
             command,
             stderr=subprocess.PIPE,
@@ -422,7 +409,7 @@ def start_m3u_stream():
 
         last_save_time = time.time()
         last_dashboard_time = time.time()
-        current_stream_seconds = last_seconds
+        current_stream_seconds = 0
         last_lines = []
 
         while True:
@@ -439,7 +426,7 @@ def start_m3u_stream():
                 if time_match:
                     hrs, mins, secs = time_match.groups()
                     played_seconds = int(hrs) * 3600 + int(mins) * 60 + float(secs)
-                    current_stream_seconds = last_seconds + played_seconds
+                    current_stream_seconds = played_seconds
 
                     now = time.time()
                     if now - last_save_time > 30:
@@ -463,8 +450,10 @@ def start_m3u_stream():
                 print(l)
             print("-----------------------------")
             write_step_summary(film_title, current_index, len(playlist), current_stream_seconds, status=f"🔴 Koptu ({process.returncode})")
-            last_seconds = current_stream_seconds
-            update_local_state(current_index, last_seconds)
+            # HATA OLUNCA SONRAKİ FİLME GEÇ (aynı filmde takılıp kalmasın)
+            current_index += 1
+            last_seconds = 0
+            update_local_state(current_index, 0)
 
         print("⚠️ 5 saniye sonra tekrar denenecek...")
         time.sleep(5)
