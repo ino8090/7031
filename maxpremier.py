@@ -42,7 +42,7 @@ LINK_CHANGE_REWIND_SECONDS = int(os.getenv("LINK_CHANGE_REWIND_SECONDS", "15"))
 
 def format_hms(total_seconds):
     """Saniyeyi SS:DD:SS formatına çevirir."""
-    total_seconds = int(total_seconds)
+    total_seconds = max(0, int(total_seconds))
     hrs = total_seconds // 3600
     mins = (total_seconds % 3600) // 60
     secs = total_seconds % 60
@@ -50,17 +50,23 @@ def format_hms(total_seconds):
 
 
 def get_video_duration_ffprobe(video_url):
-    """FFprobe kullanarak akışın/videonun gerçek toplam süresini (saniye) çeker."""
+    """
+    FFprobe ile videonun GERÇEK toplam süresini çeker.
+    M3U8 ve HLS akışlarını doğru okuyabilmek için ekstra analiz parametreleri içerir.
+    """
     cmd = [
         'ffprobe',
         '-v', 'error',
+        '-allowed_extensions', 'ALL',
+        '-analyzeduration', '20000000',
+        '-probesize', '20000000',
         '-show_entries', 'format=duration',
         '-of', 'default=noprint_wrappers=1:nokey=1',
         '-headers', f"User-Agent: {STREAM_USER_AGENT}\r\nReferer: {STREAM_REFERER}\r\n",
         video_url
     ]
     try:
-        output = subprocess.check_output(cmd, stderr=subprocess.STDOUT, timeout=12).decode('utf-8').strip()
+        output = subprocess.check_output(cmd, stderr=subprocess.STDOUT, timeout=15).decode('utf-8').strip()
         duration = float(output)
         if duration > 0:
             print(f"⏱️ ffprobe ile toplam süre tespit edildi: {duration:.1f} saniye ({format_hms(duration)})")
@@ -157,6 +163,19 @@ def write_title_file(title):
         print(f"⚠️ Başlık dosyası yazma hatası: {e}")
 
 
+def write_remaining_time_file(remaining_seconds):
+    """
+    Kalan süreyi 'time.txt' dosyasına dinamik olarak yazar.
+    FFmpeg drawtext bu dosyayı anlık reload=1 ile okuyacaktır.
+    """
+    try:
+        formatted = format_hms(remaining_seconds)
+        with open('time.txt', 'w', encoding='utf-8') as f:
+            f.write(formatted)
+    except Exception as e:
+        print(f"⚠️ Kalan süre dosyası yazma hatası: {e}")
+
+
 def print_dashboard(title, index, playlist_len, seconds, status="🟢 Yayında"):
     print("┌" + "─" * 58 + "┐")
     print(f"│ 🎬 İçerik         : {title[:36]:<36} │")
@@ -237,10 +256,15 @@ def start_m3u_stream():
         probe_url = target_stream_url.split(";")[0].strip() if ";" in target_stream_url else target_stream_url
         total_duration_sec = get_video_duration_ffprobe(probe_url)
 
+        # İlk kalan süreyi dosyaya yaz
+        initial_remaining = max(0, total_duration_sec - last_seconds) if total_duration_sec > 0 else 0
+        write_remaining_time_file(initial_remaining)
+
         print("=" * 60)
         print("📺 Maxanimasyon Canlı Aktarım Yayını (1080p 25fps - 2500k) Başlatılıyor")
         print(f"🎬 Oynatılan İçerik  : {film_title}")
         print(f"⏱️ Başlangıç Saniyesi: {last_seconds}")
+        print(f"⏱️ Toplam Süre      : {format_hms(total_duration_sec) if total_duration_sec > 0 else 'Bilinmiyor'}")
         print(f"🚀 Hedef RTMP       : {RTMP_SERVER}")
 
         headers_arg = (
@@ -297,26 +321,12 @@ def start_m3u_stream():
             f"x=w-tw-20:y=h-th-20"
         )
 
-        # Sol Alt Köşe: GERÇEK KALAN SÜRE HESABI
-        if total_duration_sec > 0:
-            # Toplam Süre - (Başlangıç Saniyesi + Anlık PTS Zamanı)
-            remaining_expr = f"{total_duration_sec}-{last_seconds}-pts*TB"
-            time_drawtext = (
-                f"drawtext=fontfile='{BOLD_FONT_PATH}':"
-                f"text='%{{eif\\:max(0\\,{remaining_expr})/3600\\:d\\:2}}\\:"
-                f"%{{eif\\:mod(max(0\\,{remaining_expr})/60\\,60)\\:d\\:2}}\\:"
-                f"%{{eif\\:mod(max(0\\,{remaining_expr})\\,60)\\:d\\:2}}':"
-                f"fontcolor=white@{TEXT_OPACITY}:fontsize=18:"
-                f"x=20:y=h-th-20"
-            )
-        else:
-            # Süre çekilemezse (Canlı Akış vb.) Geçen Süreyi Göster
-            time_drawtext = (
-                f"drawtext=fontfile='{BOLD_FONT_PATH}':"
-                f"text='%{{pts\\:gmtime\\:0\\:%H\\\\\\:%M\\\\\\:%S}}':"
-                f"fontcolor=white@{TEXT_OPACITY}:fontsize=18:"
-                f"x=20:y=h-th-20"
-            )
+        # Sol Alt Köşe: GERÇEK KALAN SÜRE (time.txt dosyasından anlık dinamik okunur)
+        time_drawtext = (
+            f"drawtext=textfile='time.txt':reload=1:fontfile='{BOLD_FONT_PATH}':"
+            f"fontcolor=white@{TEXT_OPACITY}:fontsize=18:"
+            f"x=20:y=h-th-20"
+        )
 
         if has_logo1:
             logo_inputs = ['-i', 'logo.png']
@@ -403,6 +413,14 @@ def start_m3u_stream():
                     hrs, mins, secs = time_match.groups()
                     played_seconds = int(hrs) * 3600 + int(mins) * 60 + float(secs)
                     current_stream_seconds = last_seconds + played_seconds
+
+                    # Her kare ilerlemesinde KALAN SÜREYİ 'time.txt' dosyasına yaz
+                    if total_duration_sec > 0:
+                        remaining_seconds = max(0, total_duration_sec - current_stream_seconds)
+                        write_remaining_time_file(remaining_seconds)
+                    else:
+                        # Eğer ffprobe toplam süreyi çekemediyse geçen süreyi gösterir
+                        write_remaining_time_file(current_stream_seconds)
 
                     now = time.time()
                     last_progress_time[0] = now
