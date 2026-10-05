@@ -442,9 +442,21 @@ def start_m3u_stream():
             f"x=w-tw-20:y=h-th-20"
         )
 
-        # Sol Alt Köşe: GERÇEK KALAN SÜRE (time.txt dosyasından anlık dinamik okunur)
+        # Sol Alt Köşe: DİNAMİK KALAN SÜRE
+        # Sayaç dosyadan değil, doğrudan videonun kare zamanından (t) hesaplanır.
+        # Böylece görüntüyle birebir senkron ve her saniye pürüzsüz ilerler.
+        if total_duration_sec > 0:
+            base_remaining = max(0.0, total_duration_sec - last_seconds)
+            rem_expr = f"ceil(max(0\\,{base_remaining:.3f}-t))"
+        else:
+            rem_expr = f"floor({float(last_seconds):.3f}+t)"  # süre bilinmiyorsa geçen süre
+        time_text = (
+            f"%{{eif\\:floor({rem_expr}/3600)\\:d\\:2}}\\:"
+            f"%{{eif\\:mod(floor({rem_expr}/60)\\,60)\\:d\\:2}}\\:"
+            f"%{{eif\\:mod({rem_expr}\\,60)\\:d\\:2}}"
+        )
         time_drawtext = (
-            f"drawtext=textfile='time.txt':reload=1:fontfile='{BOLD_FONT_PATH}':"
+            f"drawtext=text='{time_text}':fontfile='{BOLD_FONT_PATH}':"
             f"fontcolor=white@{TEXT_OPACITY}:fontsize=18:"
             f"x=20:y=h-th-20"
         )
@@ -508,15 +520,6 @@ def start_m3u_stream():
             stderr=subprocess.PIPE,
             universal_newlines=True
         )
-
-        # Kalan süre sayacı: her saniye düzgün güncellenir
-        _progress["started"] = False
-        threading.Thread(
-            target=countdown_updater,
-            args=(process, total_duration_sec,
-                  initial_remaining if total_duration_sec > 0 else last_seconds),
-            daemon=True
-        ).start()
 
         # Sıradaki filmin süresini arka planda önceden hesapla
         if len(playlist) > 0:
