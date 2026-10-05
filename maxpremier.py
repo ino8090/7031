@@ -9,7 +9,6 @@ import re
 import json
 import requests
 import threading
-from collections import deque
 
 # ===================== AYARLAR =====================
 RTMP_URL = "rtmp://ssh101.bozztv.com:1935/ssh101"
@@ -21,22 +20,18 @@ LOGO_URL = os.getenv("LOGO_URL") or "https://raw.githubusercontent.com/ino8090/0
 
 STATE_FILE_NAME = os.getenv("STATE_FILE_NAME", "maxpremier.json")
 CONCAT_FILE_NAME = "playlist_concat.txt"
-GITHUB_STEP_SUMMARY = os.getenv("GITHUB_STEP_SUMMARY")
 
 STREAM_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 STREAM_REFERER = "https://vidmody.com/"
 
-# Logo ve yazı opaklık ayarları
 LOGO_OPACITY = float(os.getenv("LOGO_OPACITY", "1.0"))
 TEXT_OPACITY = float(os.getenv("TEXT_OPACITY", "1.0"))
 BOLD_FONT_PATH = os.getenv("BOLD_FONT_PATH", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf")
 
-DECODER_THREADS = os.getenv("DECODER_THREADS", "1")
 WATCHDOG_TIMEOUT_SECONDS = int(os.getenv("WATCHDOG_TIMEOUT_SECONDS", "45"))
 
 
 def format_hms(total_seconds):
-    """Saniyeyi SS:DD:SS formatına çevirir."""
     total_seconds = max(0, int(total_seconds))
     hrs = total_seconds // 3600
     mins = (total_seconds % 3600) // 60
@@ -45,7 +40,6 @@ def format_hms(total_seconds):
 
 
 def get_m3u_playlist(m3u_url):
-    """M3U listesini çeker ve dizi olarak döndürür."""
     try:
         headers = {'User-Agent': STREAM_USER_AGENT, 'Referer': STREAM_REFERER}
         response = requests.get(m3u_url, headers=headers, timeout=15)
@@ -70,18 +64,11 @@ def get_m3u_playlist(m3u_url):
     return []
 
 
-def generate_concat_file(playlist, start_index=0):
-    """
-    FFmpeg'in bağlantıyı koparmadan sırayla oynatabilmesi için
-    FFmpeg Concat formatında bir dosya oluşturur.
-    """
+def generate_concat_file(playlist):
     try:
         with open(CONCAT_FILE_NAME, "w", encoding="utf-8") as f:
-            f.write("# FFmpeg Concat Playlist\n")
-            # Listeyi kalan/sıradaki elemanlardan itibaren ekle
-            ordered_playlist = playlist[start_index:] + playlist[:start_index]
-            for item in ordered_playlist:
-                # URL içerisindeki özel karakterleri kesintisiz okunması için kaçırıyoruz
+            f.write("ffconcat version 1.0\n")
+            for item in playlist:
                 clean_url = item["url"].replace("'", "'\\''")
                 f.write(f"file '{clean_url}'\n")
         print(f"📝 Concat oynatma listesi oluşturuldu: {len(playlist)} video eklendi.")
@@ -130,16 +117,13 @@ def start_seamless_stream():
         print("❌ M3U listesi boş veya alınamadı! Çıkılıyor.")
         return
 
-    # Concat dosyasını oluştur
     generate_concat_file(playlist)
 
-    # Başlangıç metin dosyalarını hazırla
     write_title_file(playlist[0]["title"])
     write_remaining_time_file(0)
 
     has_logo = os.path.exists('logo.png') and os.path.getsize('logo.png') > 0
 
-    # Drawtext Filtreleri
     title_drawtext = (
         f"drawtext=textfile='title.txt':reload=1:fontfile='{BOLD_FONT_PATH}':"
         f"fontcolor=white@{TEXT_OPACITY}:fontsize=19:"
@@ -177,15 +161,15 @@ def start_seamless_stream():
             f'[tmp2]{time_drawtext}[v]'
         )
 
-    # FFmpeg Concat Komutu (RTMP Bağlantısını 1 Kez Açar ve Asla Kapatmaz)
+    # Düzeltilmiş FFmpeg Komutu
     command = [
         'ffmpeg',
         '-re',
         '-headers', headers_arg,
         '-protocol_whitelist', 'file,http,https,tcp,tls,crypto,concat',
+        '-unsafe', '0',
         '-f', 'concat',
-        '-safe', '0',
-        '-stream_loop', '-1',  # Liste bitince en başa kesintisiz döner
+        '-stream_loop', '-1',
         '-i', CONCAT_FILE_NAME,
     ] + logo_inputs + [
         '-filter_complex', filter_str,
@@ -207,22 +191,22 @@ def start_seamless_stream():
         RTMP_SERVER
     ]
 
-    print("▶ FFmpeg tek oturum canlı aktarımı başlatıldı (Kesintisiz mod)...")
+    print("▶ FFmpeg tek oturum canlı aktarımı başlatıldı...")
 
     process = subprocess.Popen(
         command,
         stderr=subprocess.PIPE,
+        stdout=subprocess.PIPE,
         universal_newlines=True
     )
 
     last_progress_time = [time.time()]
 
-    # Watchdog Donma Kontrolü Thread'i
     def _watchdog(proc=process, progress_ref=last_progress_time):
         while proc.poll() is None:
             time.sleep(5)
             if time.time() - progress_ref[0] > WATCHDOG_TIMEOUT_SECONDS:
-                print(f"🚨 Watchdog: {WATCHDOG_TIMEOUT_SECONDS} saniyedir ilerleme yok. FFmpeg yeniden başlatılıyor.")
+                print(f"🚨 Watchdog: {WATCHDOG_TIMEOUT_SECONDS} saniyedir ilerleme yok. Kapatılıyor.")
                 try:
                     proc.kill()
                 except Exception:
@@ -234,6 +218,8 @@ def start_seamless_stream():
     while True:
         line = process.stderr.readline()
         if not line and process.poll() is not None:
+            # Hata detayını terminale yazdır ki neden düştüğü görülsün
+            print(f"⚠️ FFmpeg durdu. Çıkış Kodu: {process.returncode}")
             break
 
         if "time=" in line:
@@ -243,6 +229,9 @@ def start_seamless_stream():
                 played_seconds = int(hrs) * 3600 + int(mins) * 60 + float(secs)
                 write_remaining_time_file(played_seconds)
                 last_progress_time[0] = time.time()
+        elif "Error" in line or "error" in line or "Failed" in line:
+            # Kritik FFmpeg hatalarını doğrudan GitHub Actions/Konsol günlüğüne bas
+            print(f"🔴 FFmpeg Hatası: {line.strip()}")
 
 
 if __name__ == "__main__":
