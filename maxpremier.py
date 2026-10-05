@@ -18,8 +18,6 @@ RTMP_SERVER = f"{RTMP_URL}/{STREAM_KEY}"
 M3U_URL = os.getenv("M3U_URL") or "https://raw.githubusercontent.com/ino8090/0101/refs/heads/main/mpremiuum.m3u"
 LOGO_URL = os.getenv("LOGO_URL") or "https://raw.githubusercontent.com/ino8090/0101/refs/heads/main/1787671958979.png"
 
-STATE_FILE_NAME = os.getenv("STATE_FILE_NAME", "maxpremier.json")
-
 STREAM_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 STREAM_REFERER = "https://vidmody.com/"
 
@@ -27,11 +25,9 @@ LOGO_OPACITY = float(os.getenv("LOGO_OPACITY", "1.0"))
 TEXT_OPACITY = float(os.getenv("TEXT_OPACITY", "1.0"))
 BOLD_FONT_PATH = os.getenv("BOLD_FONT_PATH", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf")
 
-WATCHDOG_TIMEOUT_SECONDS = int(os.getenv("WATCHDOG_TIMEOUT_SECONDS", "45"))
-
 
 def format_hms(total_seconds):
-    total_seconds = max(0, int(total_seconds))
+    total_seconds = max(0, int(float(total_seconds)))
     hrs = total_seconds // 3600
     mins = (total_seconds % 3600) // 60
     secs = total_seconds % 60
@@ -46,17 +42,29 @@ def get_m3u_playlist(m3u_url):
             lines = response.text.splitlines()
             playlist = []
             pending_title = None
+            pending_duration = -1
+            
             for raw_line in lines:
                 line = raw_line.strip()
                 if not line:
                     continue
                 if line.startswith('#EXTINF'):
-                    match = re.search(r',(.+)$', line)
-                    pending_title = match.group(1).strip() if match else None
+                    # Süre ve Başlığı Çek
+                    dur_match = re.search(r'#EXTINF:(-?\d+)', line)
+                    if dur_match:
+                        pending_duration = int(dur_match.group(1))
+                    
+                    title_match = re.search(r',(.+)$', line)
+                    pending_title = title_match.group(1).strip() if title_match else None
                 elif not line.startswith('#') and line.startswith('http'):
                     title = pending_title or os.path.basename(line.split('?')[0])
-                    playlist.append({"url": line, "title": title})
+                    playlist.append({
+                        "url": line, 
+                        "title": title,
+                        "duration": pending_duration
+                    })
                     pending_title = None
+                    pending_duration = -1
             return playlist
     except Exception as e:
         print(f"⚠️ M3U çekme hatası: {e}")
@@ -95,17 +103,17 @@ def write_remaining_time_file(seconds):
 def start_seamless_stream():
     print(f"🔧 M3U URL       : {M3U_URL}")
     print(f"🔧 RTMP Hedefi   : {RTMP_SERVER}")
-    print(f"🚀 OBS Modu (Pipe Temelli Kesintisiz Akış) Başlatılıyor...")
+    print(f"🚀 OBS Modu (Kesintisiz Pipe Akışı) Başlatılıyor...\n")
 
     download_logo()
     playlist = get_m3u_playlist(M3U_URL)
+    total_videos = len(playlist)
 
-    if not playlist:
+    if total_videos == 0:
         print("❌ M3U listesi boş veya alınamadı! Çıkılıyor.")
         return
 
-    write_title_file(playlist[0]["title"])
-    write_remaining_time_file(0)
+    print(f"📝 Toplam {total_videos} video listelendi.\n")
 
     has_logo = os.path.exists('logo.png') and os.path.getsize('logo.png') > 0
 
@@ -126,7 +134,7 @@ def start_seamless_stream():
         f"Referer: {STREAM_REFERER}\r\n"
     )
 
-    # 1. RTMP Sunucusuna Bağlanan Ana FFmpeg (Ana Yayıncı - Hiç Kapanmaz)
+    # 1. Ana RTMP Yayıncısı (Sunucuya tek bir canlı bağlantı açar)
     output_cmd = [
         'ffmpeg',
         '-re',
@@ -173,32 +181,19 @@ def start_seamless_stream():
         RTMP_SERVER
     ]
 
-    print("▶ RTMP Ana Akış Oturumu Başlatılıyor...")
-    rtmp_proc = subprocess.Popen(output_cmd, stdin=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+    rtmp_proc = subprocess.Popen(output_cmd, stdin=subprocess.PIPE, stderr=subprocess.DEVNULL)
 
-    def log_rtmp_errors():
-        while rtmp_proc.poll() is None:
-            line = rtmp_proc.stderr.readline()
-            if "time=" in line:
-                time_match = re.search(r'time=(\d+):(\d+):(\d+\.\d+)', line)
-                if time_match:
-                    hrs, mins, secs = time_match.groups()
-                    played_seconds = int(hrs) * 3600 + int(mins) * 60 + float(secs)
-                    write_remaining_time_file(played_seconds)
-
-    threading.Thread(target=log_rtmp_errors, daemon=True).start()
-
-    # 2. M3U Videolarını Sırayla Okuyup RTMP Borusuna Basan Döngü
+    # 2. Videoları Sırayla Oynat ve Log Ekranına Süreyi/Sırayı Bas
     current_index = 0
     while rtmp_proc.poll() is None:
-        if current_index >= len(playlist):
-            current_index = 0  # Başarılı bitince başa dön
+        if current_index >= total_videos:
+            current_index = 0  # Liste bitince tekrar 1. videoya dön
 
         item = playlist[current_index]
         video_url = item["url"]
         title = item["title"]
+        m3u_dur = item.get("duration", -1)
 
-        print(f"🎬 Oynatılıyor [{current_index + 1}/{len(playlist)}]: {title}")
         write_title_file(title)
 
         input_cmd = [
@@ -216,10 +211,44 @@ def start_seamless_stream():
             'pipe:1'
         ]
 
-        dec_proc = subprocess.Popen(input_cmd, stdout=rtmp_proc.stdin, stderr=subprocess.DEVNULL)
-        dec_proc.wait()
+        dec_proc = subprocess.Popen(input_cmd, stdout=rtmp_proc.stdin, stderr=subprocess.PIPE, universal_newlines=True)
 
-        print(f"✅ Video tamamlandı, sonraki videoya kesintisiz geçiliyor...")
+        total_duration_secs = m3u_dur if m3u_dur > 0 else None
+
+        print(f"\n▶ [{current_index + 1}/{total_videos}] Film: {title}")
+
+        # FFmpeg stderr takibi ve canlı log basma
+        while dec_proc.poll() is None:
+            line = dec_proc.stderr.readline()
+            
+            # Eğer M3U'da süre yoksa FFmpeg başlığından çek
+            if not total_duration_secs and "Duration:" in line:
+                dur_match = re.search(r'Duration:\s*(\d+):(\d+):(\d+\.\d+)', line)
+                if dur_match:
+                    hrs, mins, secs = dur_match.groups()
+                    total_duration_secs = int(hrs) * 3600 + int(mins) * 60 + float(secs)
+
+            # Anlık oynatılan süre loglama
+            if "time=" in line:
+                time_match = re.search(r'time=(\d+):(\d+):(\d+\.\d+)', line)
+                if time_match:
+                    hrs, mins, secs = time_match.groups()
+                    curr_secs = int(hrs) * 3600 + int(mins) * 60 + float(secs)
+                    
+                    write_remaining_time_file(curr_secs)
+
+                    played_str = format_hms(curr_secs)
+                    if total_duration_secs:
+                        total_str = format_hms(total_duration_secs)
+                        progress = min(100.0, (curr_secs / total_duration_secs) * 100)
+                        log_msg = f"\r⏳ Sıra: [{current_index + 1}/{total_videos}] | Film: {title[:30]}... | Süre: {played_str} / {total_str} (%{progress:.1f})"
+                    else:
+                        log_msg = f"\r⏳ Sıra: [{current_index + 1}/{total_videos}] | Film: {title[:30]}... | Oynatılan: {played_str}"
+                    
+                    sys.stdout.write(log_msg)
+                    sys.stdout.flush()
+
+        print(f"\n✅ [{current_index + 1}/{total_videos}] {title} bitti. Sonraki videoya geçiliyor...")
         current_index += 1
 
 if __name__ == "__main__":
@@ -227,6 +256,6 @@ if __name__ == "__main__":
         try:
             start_seamless_stream()
         except Exception as e:
-            print(f"⚠️ Yayın hatası: {e}")
-        print("🔄 Yayın düştü, 5 saniye sonra bağlantı sıfırlanıp tekrar başlatılıyor...")
+            print(f"\n⚠️ Yayın hatası: {e}")
+        print("\n🔄 Yayın düştü, 5 saniye sonra bağlantı sıfırlanıp tekrar başlatılıyor...")
         time.sleep(5)
