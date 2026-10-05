@@ -153,8 +153,9 @@ def get_video_duration_ffprobe(video_url):
         video_url
     ]
     try:
-        output = subprocess.check_output(cmd, stderr=subprocess.STDOUT, timeout=15).decode('utf-8').strip()
-        duration = float(output)
+        output = subprocess.check_output(cmd, stderr=subprocess.STDOUT, timeout=15).decode('utf-8', 'replace').strip()
+        # stderr uyarıları (ör. SPS hataları) karışabilir; süre her zaman son satırdadır
+        duration = float(output.splitlines()[-1].strip())
         if duration > 0:
             print(f"⏱️ ffprobe ile toplam süre tespit edildi: {duration:.1f} saniye ({format_hms(duration)})")
             return duration
