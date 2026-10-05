@@ -36,8 +36,8 @@ LINK_CHANGE_REWIND_SECONDS = int(os.getenv("LINK_CHANGE_REWIND_SECONDS", "15"))
 CONCAT_FILE = "concat_playlist.txt"
 
 # Filter modunda aynı anda en fazla kaç içerik FFmpeg'e input olarak verilsin.
-# Bellek/CPU'yu korumak için parça parça işlenir.
-MAX_INPUTS_PER_BATCH = int(os.getenv("MAX_INPUTS_PER_BATCH", "8"))
+# Çift URL'li içeriklerde her içerik 2 input açar, yani 4 içerik = 8 input.
+MAX_INPUTS_PER_BATCH = int(os.getenv("MAX_INPUTS_PER_BATCH", "4"))
 
 
 def format_hms(total_seconds):
@@ -48,8 +48,12 @@ def format_hms(total_seconds):
     return f"{hrs:02d}:{mins:02d}:{secs:02d}"
 
 
+# ===================== FFPROBE (SAĞLAMLAŞTIRILDI) =====================
 def get_video_duration_ffprobe(video_url):
-    """FFprobe ile videonun gerçek toplam süresini çeker."""
+    """
+    FFprobe ile videonun gerçek toplam süresini çeker.
+    H.264 SPS hataları gibi kirli stderr çıktılarını temizler.
+    """
     cmd = [
         'ffprobe', '-v', 'error',
         '-allowed_extensions', 'ALL',
@@ -61,8 +65,28 @@ def get_video_duration_ffprobe(video_url):
         video_url
     ]
     try:
-        output = subprocess.check_output(cmd, stderr=subprocess.STDOUT, timeout=20).decode('utf-8').strip()
-        duration = float(output)
+        output = subprocess.check_output(
+            cmd, stderr=subprocess.STDOUT, timeout=20
+        ).decode('utf-8', errors='ignore')
+
+        lines = [ln.strip() for ln in output.splitlines() if ln.strip()]
+        duration = 0.0
+
+        # Sondan başa doğru tara, geçerli bir float satırı bul
+        for ln in reversed(lines):
+            # Saf float satırı
+            if re.fullmatch(r'\d+(\.\d+)?', ln):
+                duration = float(ln)
+                break
+            # Satır sonunda float varsa onu al
+            m = re.search(r'(\d+\.\d+)\s*$', ln)
+            if m:
+                try:
+                    duration = float(m.group(1))
+                    break
+                except ValueError:
+                    continue
+
         if duration > 0:
             print(f"⏱️ ffprobe toplam süre: {duration:.1f}s ({format_hms(duration)})")
             return duration
@@ -226,39 +250,65 @@ def split_dual_url(url):
 
 
 # ===================== FFMPEG KOMUTU OLUŞTURMA =====================
-def build_filter_graph(has_logo, video_input_count, audio_input_count, logo_input_index):
+def build_filter_graph(has_logo, batch_meta, logo_input_index):
     """
     filter_complex string'i üretir.
-    - video_input_count kadar video stream'i concat filter ile birleştirir.
-    - audio_input_count kadar audio stream'i concat filter ile birleştirir.
-    - Sonra scale/pad/fps + logo overlay + drawtext uygulanır.
+    
+    batch_meta: [{"is_dual": bool}, ...] — sırayla batch'teki içerikler.
+    Her item için:
+      - tek URL ise → 1 input (hem video hem audio aynı)
+      - çift URL ise → 2 input (video, audio)
+    
+    FFmpeg input index'leri şu sırayla artar:
+      item0_video, item0_audio, item1_video, item1_audio, ...
+    tek URL durumunda o item sadece 1 input açar (hem v hem a).
+    
+    Dönüş: (filter_str, total_input_count)
     """
     parts = []
+    video_indices = []   # [(n, ffmpeg_input_idx), ...] video stream'ler
+    audio_indices = []   # [(n, ffmpeg_input_idx), ...] audio stream'ler
 
-    # 1) Her video stream'i önce scale/pad/fps ile normalize et
-    for i in range(video_input_count):
+    cursor = 0  # FFmpeg input index sayacı
+    for n, item in enumerate(batch_meta):
+        if item["is_dual"]:
+            # Video input
+            video_indices.append((n, cursor))
+            cursor += 1
+            # Audio input
+            audio_indices.append((n, cursor))
+            cursor += 1
+        else:
+            # Tek input → hem video hem audio aynı input index'inde
+            video_indices.append((n, cursor))
+            audio_indices.append((n, cursor))
+            cursor += 1
+
+    total_input_count = cursor
+
+    # 1) Video stream'leri normalize et → [vN]
+    for n, v_idx in video_indices:
         parts.append(
-            f"[{i}:v]scale=1920:1080:force_original_aspect_ratio=decrease,"
+            f"[{v_idx}:v]scale=1920:1080:force_original_aspect_ratio=decrease,"
             f"pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,fps=25,"
-            f"setsar=1[v{i}]"
+            f"setsar=1[v{n}]"
         )
 
-    # 2) Her audio stream'i normalize et (örnekleme oranı/kanal)
-    audio_labels = []
-    for i in range(audio_input_count):
+    # 2) Audio stream'leri normalize et → [aN]
+    for n, a_idx in audio_indices:
         parts.append(
-            f"[{i}:a]aresample=44100,aformat=sample_fmts=fltp:channel_layouts=stereo[a{i}]"
+            f"[{a_idx}:a]aresample=44100,aformat=sample_fmts=fltp:channel_layouts=stereo[a{n}]"
         )
-        audio_labels.append(f"[a{i}]")
 
-    # 3) Video concat (hepsi tek bir [vcat] etiketinde birleşir)
-    vcat_inputs = "".join(f"[v{i}]" for i in range(video_input_count))
-    parts.append(f"{vcat_inputs}concat=n={video_input_count}:v=1:a=0[vcat]")
+    # 3) Video concat → [vcat]
+    vcat_inputs = "".join(f"[v{n}]" for n, _ in video_indices)
+    vcount = len(video_indices)
+    parts.append(f"{vcat_inputs}concat=n={vcount}:v=1:a=0[vcat]")
 
-    # 4) Audio concat (hepsi [acat] etiketinde)
-    if audio_input_count > 0:
-        acat_inputs = "".join(audio_labels)
-        parts.append(f"{acat_inputs}concat=n={audio_input_count}:v=0:a=1[acat]")
+    # 4) Audio concat → [acat]
+    acat_inputs = "".join(f"[a{n}]" for n, _ in audio_indices)
+    acount = len(audio_indices)
+    parts.append(f"{acat_inputs}concat=n={acount}:v=0:a=1[acat]")
 
     # 5) Logo overlay
     if has_logo:
@@ -285,31 +335,7 @@ def build_filter_graph(has_logo, video_input_count, audio_input_count, logo_inpu
     parts.append(f"{last_video_label}{title_drawtext}[tmp2]")
     parts.append(f"[tmp2]{time_drawtext}[vout]")
 
-    return ";".join(parts)
-
-
-def stream_input_options():
-    """Tüm input'lar için ortak header/reconnect ayarları."""
-    headers_arg = (
-        f"User-Agent: {STREAM_USER_AGENT}\r\n"
-        f"Referer: {STREAM_REFERER}\r\n"
-        f"Origin: https://vidmody.com\r\n"
-    )
-    return [
-        '-headers', headers_arg,
-        '-protocol_whitelist', 'file,http,https,tcp,tls,crypto',
-        '-err_detect', 'ignore_err',
-        '-fflags', '+genpts+discardcorrupt',
-        '-thread_queue_size', '1024',
-        '-analyzeduration', '10000000',
-        '-probesize', '10000000',
-        '-reconnect', '1',
-        '-reconnect_at_eof', '1',
-        '-reconnect_streamed', '1',
-        '-reconnect_delay_max', '10',
-        '-rw_timeout', '10000000',
-        '-threads', DECODER_THREADS,
-    ]
+    return ";".join(parts), total_input_count
 
 
 def get_output_args():
@@ -338,6 +364,7 @@ def start_m3u_stream():
     print(f"🔧 State        : {STATE_FILE_NAME}")
     print(f"🔧 RTMP         : {RTMP_SERVER}")
     print(f"🔧 Decoder thrd : {DECODER_THREADS}")
+    print(f"🔧 Batch size   : {MAX_INPUTS_PER_BATCH}")
     print(f"🔧 Mod          : KESİNTİSİZ (concat demuxer/filter hibrit)")
 
     download_logo()
@@ -376,8 +403,7 @@ def start_m3u_stream():
     print_dashboard(current_item["title"], current_index, len(playlist), last_seconds, status="🟡 Başlatılıyor")
     write_step_summary(current_item["title"], current_index, len(playlist), last_seconds, status="🟡 Başlatılıyor")
 
-    # ---- Mod seçimi: saf tek-URL mi, çift-URL karışık mı? ----
-    # Playlist'te (current_index'ten itibaren) çift URL var mı?
+    # ---- Mod seçimi ----
     has_any_dual = any(is_dual_url(playlist[i]["url"]) for i in range(current_index, len(playlist)))
 
     if not has_any_dual:
@@ -406,7 +432,6 @@ def run_concat_demuxer_mode(playlist, current_index, last_seconds):
 
     has_logo = os.path.exists('logo.png') and os.path.getsize('logo.png') > 0
 
-    # concat demuxer tek input verir, o yüzden filter graph basitçe [0:v] üzerinden
     title_drawtext = (
         f"drawtext=textfile='title.txt':reload=1:fontfile='{BOLD_FONT_PATH}':"
         f"fontcolor=white@{TEXT_OPACITY}:fontsize=19:"
@@ -462,7 +487,6 @@ def run_concat_demuxer_mode(playlist, current_index, last_seconds):
     print("▶ FFmpeg (concat demuxer) başlatıldı...")
     process = subprocess.Popen(cmd, stderr=subprocess.PIPE, universal_newlines=True)
 
-    # Playlist meta: her filmin kümülatif başlangıcı (demuxer'da süreleri toplayarak)
     cumulative = compute_cumulative(playlist, current_index, last_seconds)
 
     monitor_process(
@@ -478,34 +502,30 @@ def run_concat_demuxer_mode(playlist, current_index, last_seconds):
 # ===================== MOD 2: CONCAT FILTER (Çift URL) =====================
 def run_concat_filter_mode(playlist, current_index, last_seconds):
     """
-    Çift URL'li içerikleri concat filter ile işler. Batch'ler halinde çalışır
-    ki FFmpeg aynı anda yüzlerce input açmasın.
+    Çift URL'li içerikleri concat filter ile işler. Batch'ler halinde çalışır.
     """
     idx = current_index
     seek = last_seconds
 
     while idx < len(playlist):
         batch = []
-        # Batch'i doldur: her item en fazla 1 veya 2 input açar
         for i in range(idx, min(idx + MAX_INPUTS_PER_BATCH, len(playlist))):
             batch.append(playlist[i])
 
         print(f"📦 Batch başlıyor → sıra {idx+1} .. {idx+len(batch)}")
-        seek = run_filter_batch(batch, idx, seek, playlist)
-        idx += len(batch)
-
-        if seek < 0:
-            # Hata durumunda kaldığı yerden devam et
+        result = run_filter_batch(batch, idx, seek, playlist)
+        if result is None or result < 0:
+            print("❌ Batch başarısız oldu, çıkılıyor (üst döngü tekrar deneyecek).")
             return
+        idx += len(batch)
+        seek = 0  # sonraki batch'ler baştan başlar
 
     print("🔁 Tüm playlist filter modunda tamamlandı.")
 
 
 def run_filter_batch(batch, batch_start_index, start_seek, full_playlist):
     """
-    Tek bir FFmpeg çağrısıyla batch'i oynatır. RTMP bağlantısı batch bitene
-    kadar ayakta kalır; batch bitince yeni FFmpeg başlar. Çift URL'li
-    içeriklerde RTMP kopukluğu sadece batch sınırlarında olur (her ~8 içerik).
+    Tek bir FFmpeg çağrısıyla batch'i oynatır.
     """
     headers_arg = (
         f"User-Agent: {STREAM_USER_AGENT}\r\n"
@@ -531,9 +551,7 @@ def run_filter_batch(batch, batch_start_index, start_seek, full_playlist):
     ]
 
     input_args = []
-    video_input_count = 0
-    audio_input_count = 0
-    has_logo = os.path.exists('logo.png') and os.path.getsize('logo.png') > 0
+    batch_meta = []  # her item için {"is_dual": bool}
 
     for n, item in enumerate(batch):
         url = item["url"]
@@ -543,39 +561,35 @@ def run_filter_batch(batch, batch_start_index, start_seek, full_playlist):
 
         if is_dual_url(url):
             v_url, a_url = split_dual_url(url)
-            # Video input
             input_args += common_in_opts + seek_args + ['-i', v_url]
-            video_input_count += 1
-            # Audio input
             input_args += common_in_opts + seek_args + ['-i', a_url]
-            audio_input_count += 1
+            batch_meta.append({"is_dual": True})
         else:
             input_args += common_in_opts + seek_args + ['-i', url]
-            video_input_count += 1
-            audio_input_count += 1
+            batch_meta.append({"is_dual": False})
 
-    # Logo input (index = video_input_count + audio_input_count olan toplam input index'i)
-    logo_input_index = video_input_count + audio_input_count
-    logo_inputs = []
-    if has_logo:
-        logo_inputs = ['-i', 'logo.png']
+    # Toplam stream input sayısı
+    total_stream_inputs = sum(2 if m["is_dual"] else 1 for m in batch_meta)
+    logo_input_index = total_stream_inputs  # logo bir sonraki index
 
-    filter_str = build_filter_graph(
+    has_logo = os.path.exists('logo.png') and os.path.getsize('logo.png') > 0
+    logo_inputs = ['-i', 'logo.png'] if has_logo else []
+
+    filter_str, total_inputs = build_filter_graph(
         has_logo=has_logo,
-        video_input_count=video_input_count,
-        audio_input_count=audio_input_count,
+        batch_meta=batch_meta,
         logo_input_index=logo_input_index,
     )
 
-    # Audio map: ilk audio stream'i (zaten concat ile [acat] oluştu)
-    audio_map = ['-map', '[acat]'] if audio_input_count > 0 else []
+    print(f"▶ FFmpeg (concat filter) batch — stream inputs: {total_stream_inputs}, "
+          f"logo idx: {logo_input_index if has_logo else 'yok'}")
 
     cmd = ['ffmpeg'] + input_args + logo_inputs + [
         '-filter_complex', filter_str,
         '-map', '[vout]',
-    ] + audio_map + get_output_args()
+        '-map', '[acat]',
+    ] + get_output_args()
 
-    print(f"▶ FFmpeg (concat filter) batch başlatıldı — video inputs: {video_input_count}, audio inputs: {audio_input_count}")
     process = subprocess.Popen(cmd, stderr=subprocess.PIPE, universal_newlines=True)
 
     cumulative = compute_cumulative(full_playlist, batch_start_index, start_seek, limit=len(batch))
@@ -588,9 +602,7 @@ def run_filter_batch(batch, batch_start_index, start_seek, full_playlist):
         initial_seconds=start_seek,
         mode_label="filter",
     )
-    # final_state: (index, seconds) — batch başarılı bittiyse sonraki index'i döneriz
     if final_state is None:
-        # Hata ile bitti → kaldığı yerden devam etmek için negatif dönüş
         return -1
     return final_state[1]
 
@@ -720,8 +732,9 @@ def monitor_process(process, playlist, cumulative, initial_index, initial_second
 
     if rc == 0:
         # Batch başarıyla bitti → sonraki içerikten devam
-        update_local_state(final_idx + 1, 0, "", "")
-        return (final_idx + 1, 0)
+        next_idx = final_idx + 1
+        update_local_state(next_idx, 0, "", "")
+        return (next_idx, 0)
 
     # Hata: kalınan yerden devam
     print(f"⚠️ FFmpeg çıktı (rc={rc}). Kaldığı yerden devam edilecek: index={final_idx}, sec={final_sec}")
@@ -729,7 +742,8 @@ def monitor_process(process, playlist, cumulative, initial_index, initial_second
         print("🧾 FFmpeg son log satırları:")
         for tl in stderr_tail:
             print(f"   {tl}")
-    update_local_state(final_idx, final_sec, playlist[final_idx]["url"], playlist[final_idx]["title"])
+    safe_idx = min(final_idx, len(playlist) - 1)
+    update_local_state(safe_idx, final_sec, playlist[safe_idx]["url"], playlist[safe_idx]["title"])
     return None
 
 
