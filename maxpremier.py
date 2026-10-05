@@ -19,7 +19,6 @@ M3U_URL = os.getenv("M3U_URL") or "https://raw.githubusercontent.com/ino8090/010
 LOGO_URL = os.getenv("LOGO_URL") or "https://raw.githubusercontent.com/ino8090/0101/refs/heads/main/1787671958979.png"
 
 STATE_FILE_NAME = os.getenv("STATE_FILE_NAME", "maxpremier.json")
-CONCAT_FILE_NAME = "playlist_concat.txt"
 
 STREAM_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 STREAM_REFERER = "https://vidmody.com/"
@@ -64,18 +63,6 @@ def get_m3u_playlist(m3u_url):
     return []
 
 
-def generate_concat_file(playlist):
-    try:
-        with open(CONCAT_FILE_NAME, "w", encoding="utf-8") as f:
-            f.write("ffconcat version 1.0\n")
-            for item in playlist:
-                clean_url = item["url"].replace("'", "'\\''")
-                f.write(f"file '{clean_url}'\n")
-        print(f"📝 Concat oynatma listesi oluşturuldu: {len(playlist)} video eklendi.")
-    except Exception as e:
-        print(f"⚠️ Concat dosyası yazma hatası: {e}")
-
-
 def download_logo():
     headers = {'User-Agent': STREAM_USER_AGENT}
     try:
@@ -108,7 +95,7 @@ def write_remaining_time_file(seconds):
 def start_seamless_stream():
     print(f"🔧 M3U URL       : {M3U_URL}")
     print(f"🔧 RTMP Hedefi   : {RTMP_SERVER}")
-    print(f"🚀 OBS Modu (Kopmasız Concat Akışı) Başlatılıyor...")
+    print(f"🚀 OBS Modu (Pipe Temelli Kesintisiz Akış) Başlatılıyor...")
 
     download_logo()
     playlist = get_m3u_playlist(M3U_URL)
@@ -116,8 +103,6 @@ def start_seamless_stream():
     if not playlist:
         print("❌ M3U listesi boş veya alınamadı! Çıkılıyor.")
         return
-
-    generate_concat_file(playlist)
 
     write_title_file(playlist[0]["title"])
     write_remaining_time_file(0)
@@ -141,8 +126,16 @@ def start_seamless_stream():
         f"Referer: {STREAM_REFERER}\r\n"
     )
 
+    # 1. RTMP Sunucusuna Bağlanan Ana FFmpeg (Ana Yayıncı - Hiç Kapanmaz)
+    output_cmd = [
+        'ffmpeg',
+        '-re',
+        '-f', 'mpegts',
+        '-i', 'pipe:0',
+    ]
+
     if has_logo:
-        logo_inputs = ['-i', 'logo.png']
+        output_cmd += ['-i', 'logo.png']
         filter_str = (
             '[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,'
             'pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,fps=25[main];'
@@ -153,7 +146,6 @@ def start_seamless_stream():
             f'[tmp2]{time_drawtext}[v]'
         )
     else:
-        logo_inputs = []
         filter_str = (
             '[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,'
             'pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,fps=25[main];'
@@ -161,17 +153,7 @@ def start_seamless_stream():
             f'[tmp2]{time_drawtext}[v]'
         )
 
-    # Düzeltilmiş ve Temizlenmiş FFmpeg Komutu
-    command = [
-        'ffmpeg',
-        '-re',
-        '-headers', headers_arg,
-        '-protocol_whitelist', 'file,http,https,tcp,tls,crypto,concat',
-        '-f', 'concat',
-        '-safe', '0',
-        '-stream_loop', '-1',
-        '-i', CONCAT_FILE_NAME,
-    ] + logo_inputs + [
+    output_cmd += [
         '-filter_complex', filter_str,
         '-map', '[v]',
         '-map', '0:a:0?',
@@ -191,46 +173,54 @@ def start_seamless_stream():
         RTMP_SERVER
     ]
 
-    print("▶ FFmpeg tek oturum canlı aktarımı başlatıldı...")
+    print("▶ RTMP Ana Akış Oturumu Başlatılıyor...")
+    rtmp_proc = subprocess.Popen(output_cmd, stdin=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
 
-    process = subprocess.Popen(
-        command,
-        stderr=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        universal_newlines=True
-    )
+    def log_rtmp_errors():
+        while rtmp_proc.poll() is None:
+            line = rtmp_proc.stderr.readline()
+            if "time=" in line:
+                time_match = re.search(r'time=(\d+):(\d+):(\d+\.\d+)', line)
+                if time_match:
+                    hrs, mins, secs = time_match.groups()
+                    played_seconds = int(hrs) * 3600 + int(mins) * 60 + float(secs)
+                    write_remaining_time_file(played_seconds)
 
-    last_progress_time = [time.time()]
+    threading.Thread(target=log_rtmp_errors, daemon=True).start()
 
-    def _watchdog(proc=process, progress_ref=last_progress_time):
-        while proc.poll() is None:
-            time.sleep(5)
-            if time.time() - progress_ref[0] > WATCHDOG_TIMEOUT_SECONDS:
-                print(f"🚨 Watchdog: {WATCHDOG_TIMEOUT_SECONDS} saniyedir ilerleme yok. Kapatılıyor.")
-                try:
-                    proc.kill()
-                except Exception:
-                    pass
-                break
+    # 2. M3U Videolarını Sırayla Okuyup RTMP Borusuna Basan Döngü
+    current_index = 0
+    while rtmp_proc.poll() is None:
+        if current_index >= len(playlist):
+            current_index = 0  # Başarılı bitince başa dön
 
-    threading.Thread(target=_watchdog, daemon=True).start()
+        item = playlist[current_index]
+        video_url = item["url"]
+        title = item["title"]
 
-    while True:
-        line = process.stderr.readline()
-        if not line and process.poll() is not None:
-            print(f"⚠️ FFmpeg durdu. Çıkış Kodu: {process.returncode}")
-            break
+        print(f"🎬 Oynatılıyor [{current_index + 1}/{len(playlist)}]: {title}")
+        write_title_file(title)
 
-        if "time=" in line:
-            time_match = re.search(r'time=(\d+):(\d+):(\d+\.\d+)', line)
-            if time_match:
-                hrs, mins, secs = time_match.groups()
-                played_seconds = int(hrs) * 3600 + int(mins) * 60 + float(secs)
-                write_remaining_time_file(played_seconds)
-                last_progress_time[0] = time.time()
-        elif "Error" in line or "error" in line or "Failed" in line:
-            print(f"🔴 FFmpeg Hatası: {line.strip()}")
+        input_cmd = [
+            'ffmpeg',
+            '-reconnect', '1',
+            '-reconnect_streamed', '1',
+            '-reconnect_delay_max', '5',
+            '-headers', headers_arg,
+            '-i', video_url,
+            '-c:v', 'mpeg2video',
+            '-b:v', '3000k',
+            '-c:a', 'mp2',
+            '-b:a', '128k',
+            '-f', 'mpegts',
+            'pipe:1'
+        ]
 
+        dec_proc = subprocess.Popen(input_cmd, stdout=rtmp_proc.stdin, stderr=subprocess.DEVNULL)
+        dec_proc.wait()
+
+        print(f"✅ Video tamamlandı, sonraki videoya kesintisiz geçiliyor...")
+        current_index += 1
 
 if __name__ == "__main__":
     while True:
