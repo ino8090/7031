@@ -72,13 +72,10 @@ def get_video_duration_ffprobe(video_url):
         lines = [ln.strip() for ln in output.splitlines() if ln.strip()]
         duration = 0.0
 
-        # Sondan başa doğru tara, geçerli bir float satırı bul
         for ln in reversed(lines):
-            # Saf float satırı
             if re.fullmatch(r'\d+(\.\d+)?', ln):
                 duration = float(ln)
                 break
-            # Satır sonunda float varsa onu al
             m = re.search(r'(\d+\.\d+)\s*$', ln)
             if m:
                 try:
@@ -259,27 +256,20 @@ def build_filter_graph(has_logo, batch_meta, logo_input_index):
       - tek URL ise → 1 input (hem video hem audio aynı)
       - çift URL ise → 2 input (video, audio)
     
-    FFmpeg input index'leri şu sırayla artar:
-      item0_video, item0_audio, item1_video, item1_audio, ...
-    tek URL durumunda o item sadece 1 input açar (hem v hem a).
-    
     Dönüş: (filter_str, total_input_count)
     """
     parts = []
-    video_indices = []   # [(n, ffmpeg_input_idx), ...] video stream'ler
-    audio_indices = []   # [(n, ffmpeg_input_idx), ...] audio stream'ler
+    video_indices = []
+    audio_indices = []
 
-    cursor = 0  # FFmpeg input index sayacı
+    cursor = 0
     for n, item in enumerate(batch_meta):
         if item["is_dual"]:
-            # Video input
             video_indices.append((n, cursor))
             cursor += 1
-            # Audio input
             audio_indices.append((n, cursor))
             cursor += 1
         else:
-            # Tek input → hem video hem audio aynı input index'inde
             video_indices.append((n, cursor))
             audio_indices.append((n, cursor))
             cursor += 1
@@ -551,7 +541,7 @@ def run_filter_batch(batch, batch_start_index, start_seek, full_playlist):
     ]
 
     input_args = []
-    batch_meta = []  # her item için {"is_dual": bool}
+    batch_meta = []
 
     for n, item in enumerate(batch):
         url = item["url"]
@@ -568,9 +558,8 @@ def run_filter_batch(batch, batch_start_index, start_seek, full_playlist):
             input_args += common_in_opts + seek_args + ['-i', url]
             batch_meta.append({"is_dual": False})
 
-    # Toplam stream input sayısı
     total_stream_inputs = sum(2 if m["is_dual"] else 1 for m in batch_meta)
-    logo_input_index = total_stream_inputs  # logo bir sonraki index
+    logo_input_index = total_stream_inputs
 
     has_logo = os.path.exists('logo.png') and os.path.getsize('logo.png') > 0
     logo_inputs = ['-i', 'logo.png'] if has_logo else []
@@ -607,11 +596,14 @@ def run_filter_batch(batch, batch_start_index, start_seek, full_playlist):
     return final_state[1]
 
 
-# ===================== YARDIMCILAR =====================
+# ===================== YARDIMCILAR (DÜZELTİLDİ) =====================
 def compute_cumulative(playlist, start_index, start_seek, limit=None):
     """
     Playlist[start_index:] içindeki her içeriğin kümülatif başlangıç saniyesini
     ve süresini hesaplar. Çift URL'de video süresi baz alınır.
+    
+    ÖNEMLİ: -ss uygulandığında ilk içeriğin efektif süresi start_seek kadar
+    azalır ve kümülatif başlangıç 0'dan başlar (FFmpeg output 0'dan başlar).
     """
     result = []
     running = 0.0
@@ -622,16 +614,27 @@ def compute_cumulative(playlist, start_index, start_seek, limit=None):
         url = item["url"]
         probe_url = url.split(";")[0].strip() if is_dual_url(url) else url
         dur = get_video_duration_ffprobe(probe_url)
+
+        # İlk içeriğe -ss uygulanıyorsa efektif süre kısalır
         if i == start_index and start_seek > 0:
-            dur = max(0.0, dur - start_seek)
+            effective_dur = max(0.0, dur - start_seek)
+        else:
+            effective_dur = dur
+
         result.append({
             "index": i,
             "title": item["title"],
             "start": running,
-            "duration": dur,
-            "original_duration": dur + (start_seek if i == start_index else 0),
+            "duration": effective_dur,
+            "original_duration": dur,
         })
-        running += dur
+        running += effective_dur
+
+    if result:
+        print(f"📊 Kümülatif hesap: ilk='{result[0]['title']}' "
+              f"start={result[0]['start']:.0f}s, efektif={result[0]['duration']:.0f}s "
+              f"(orijinal={result[0]['original_duration']:.0f}s, seek={start_seek}s)")
+
     return result
 
 
@@ -647,7 +650,6 @@ def monitor_process(process, playlist, cumulative, initial_index, initial_second
         "index": initial_index,
         "seconds": initial_seconds,
         "last_progress": time.time(),
-        "cumulative_offset": initial_seconds,
     }
 
     def _reader(proc=process, tail=stderr_tail, st=state, lock=state_lock):
@@ -660,8 +662,12 @@ def monitor_process(process, playlist, cumulative, initial_index, initial_second
                 continue
             h, mi, s = m.groups()
             played = int(h) * 3600 + int(mi) * 60 + float(s)
+
+            # FFmpeg time= çıktısı, OUTPUT stream'in başından itibaren geçen
+            # süredir. -ss kullanılsa bile output 0'dan başlar.
+            absolute = played
+
             with lock:
-                absolute = st["cumulative_offset"] + played
                 st["last_progress"] = time.time()
 
                 active = None
@@ -675,7 +681,11 @@ def monitor_process(process, playlist, cumulative, initial_index, initial_second
                 if active and active["index"] != st["index"]:
                     st["index"] = active["index"]
                     write_title_file(active["title"])
-                    update_local_state(active["index"], 0, playlist[active["index"]]["url"], active["title"])
+                    update_local_state(
+                        active["index"], 0,
+                        playlist[active["index"]]["url"],
+                        active["title"]
+                    )
                     print(f"🎬 Sıradaki içeriğe geçildi: [{active['index']+1}] {active['title']}")
                     print_dashboard(active["title"], active["index"], len(playlist), 0)
                     write_step_summary(active["title"], active["index"], len(playlist), 0)
@@ -731,12 +741,10 @@ def monitor_process(process, playlist, cumulative, initial_index, initial_second
         final_sec = int(state["seconds"])
 
     if rc == 0:
-        # Batch başarıyla bitti → sonraki içerikten devam
         next_idx = final_idx + 1
         update_local_state(next_idx, 0, "", "")
         return (next_idx, 0)
 
-    # Hata: kalınan yerden devam
     print(f"⚠️ FFmpeg çıktı (rc={rc}). Kaldığı yerden devam edilecek: index={final_idx}, sec={final_sec}")
     if stderr_tail:
         print("🧾 FFmpeg son log satırları:")
