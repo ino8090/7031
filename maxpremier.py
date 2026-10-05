@@ -515,8 +515,8 @@ def start_m3u_stream():
                 time_match = re.search(r'time=(\d+):(\d+):(\d+\.\d+)', line)
                 if time_match:
                     hrs, mins, secs = time_match.groups()
-                    # Çıktı zaman damgası ts_offset içerir; gerçek oynatılan süre için çıkarılır
-                    played_seconds = max(0.0, int(hrs) * 3600 + int(mins) * 60 + float(secs) - ts_offset)
+                    # FFmpeg'in time= değeri output_ts_offset'i İÇERMEZ, doğrudan oynatılan süredir
+                    played_seconds = int(hrs) * 3600 + int(mins) * 60 + float(secs)
                     current_stream_seconds = last_seconds + played_seconds
 
                     # Her kare ilerlemesinde KALAN SÜREYİ 'time.txt' dosyasına yaz
