@@ -10,6 +10,7 @@ import json
 import requests
 import threading
 import atexit
+import fcntl
 from collections import deque
 
 # ===================== AYARLAR =====================
@@ -60,7 +61,6 @@ def get_video_duration_ffprobe(video_url):
     ]
     try:
         output = subprocess.check_output(cmd, stderr=subprocess.STDOUT, timeout=15).decode('utf-8').strip()
-        # Sadece son satırdaki sayıyı al (ffmpeg log satırları karışabilir)
         last_line = output.splitlines()[-1].strip()
         duration = float(last_line)
         if duration > 0:
@@ -213,22 +213,37 @@ def create_fifo():
         sys.exit(1)
 
 
+def keep_fifo_open_nonblock():
+    """
+    FIFO'nun her iki ucunu da Python tarafında açık tutarak
+    decoder/main FFmpeg arasındaki open() deadlock'ını engeller.
+    Bu fd kapatılmaz; süreç bitene kadar açık kalır.
+    """
+    fd = os.open(FIFO_PATH, os.O_RDWR | os.O_NONBLOCK)
+    flags = fcntl.fcntl(fd, fcntl.F_GETFL)
+    fcntl.fcntl(fd, fcntl.F_SETFL, flags & ~os.O_NONBLOCK)
+    return fd
+
+
 atexit.register(cleanup_fifo)
 
 
-# ===================== ANA FFMPEG (RTMP'YE BASAN) =====================
-# FIFO'dan MPEG-TS okur, stream'i COPY ederek RTMP'ye basar.
-# Video geçişlerinde BU SÜREÇ ASLA KAPANMAZ.
+# ===================== ANA FFMPEG =====================
 
 def start_main_ffmpeg():
+    """
+    Ana FFmpeg: FIFO'dan MPEG-TS okur, -c copy ile RTMP'ye basar.
+    Hızlı probe için -probesize ve -analyzeduration minimize edildi.
+    """
     cmd = [
         'ffmpeg',
         '-hide_banner',
         '-loglevel', 'warning',
-        '-fflags', '+genpts+igndts+discardcorrupt',
-        '-thread_queue_size', '4096',
-        '-analyzeduration', '10000000',
-        '-probesize', '10000000',
+        '-fflags', '+genpts+igndts+discardcorrupt+nobuffer',
+        '-flags', 'low_delay',
+        '-thread_queue_size', '8192',
+        '-analyzeduration', '0',
+        '-probesize', '32',
         '-f', 'mpegts',
         '-i', FIFO_PATH,
         '-c', 'copy',
@@ -246,9 +261,7 @@ def start_main_ffmpeg():
     return proc
 
 
-# ===================== DECODER FFMPEG (FIFO'YA YAZAN) =====================
-# Kaynak videoyu decode eder, logo+title+time overlay uygular,
-# H264+AAC olarak MPEG-TS container içinde FIFO'ya yazar.
+# ===================== DECODER FFMPEG =====================
 
 def build_decoder_command(target_stream_url, last_seconds, has_logo1, audio_only_url=None):
     headers_arg = (
@@ -320,13 +333,13 @@ def build_decoder_command(target_stream_url, last_seconds, has_logo1, audio_only
             f'[tmp2]{time_drawtext}[v]'
         )
 
-    # MPEG-TS olarak FIFO'ya yaz. Bu container hem video hem sesi taşır.
-    # -re ile gerçek zamanlı pacing yapılır (yayın hızı korunur).
+    # ÖNEMLİ: -re YOK. FIFO'ya hızlı yazılır, pacing RTMP encoder'da olur.
+    # -flush_packets 1 ile paketler hemen FIFO'ya itilir.
+    # -muxdelay 0 -muxpreload 0 ile MPEG-TS header gecikmesi sıfırlanır.
     command = [
         'ffmpeg',
         '-hide_banner',
         '-loglevel', 'info',
-        '-re',
     ] + input_args + logo_inputs + [
         '-filter_complex', filter_str,
         '-map', '[v]'
@@ -346,6 +359,7 @@ def build_decoder_command(target_stream_url, last_seconds, has_logo1, audio_only
         '-ar', '44100',
         '-muxdelay', '0',
         '-muxpreload', '0',
+        '-flush_packets', '1',
         '-f', 'mpegts',
         FIFO_PATH
     ]
@@ -364,6 +378,9 @@ def start_m3u_stream():
 
     download_logo()
     create_fifo()
+
+    # FIFO'yu sürekli açık tut (deadlock önleyici)
+    fifo_keepalive_fd = keep_fifo_open_nonblock()
 
     main_proc = start_main_ffmpeg()
 
@@ -387,10 +404,8 @@ def start_m3u_stream():
     MAX_RETRY_DELAY_SECONDS = 120
 
     while True:
-        # Ana FFmpeg öldüyse yeniden başlat
         if main_proc.poll() is not None:
             print(f"⚠️ Ana FFmpeg beklenmedik şekilde kapandı (rc={main_proc.returncode}). Yeniden başlatılıyor...")
-            create_fifo()
             main_proc = start_main_ffmpeg()
             threading.Thread(target=_main_logger, args=(main_proc,), daemon=True).start()
 
@@ -463,10 +478,20 @@ def start_m3u_stream():
         stderr_tail = deque(maxlen=40)
 
         last_progress_time = [time.time()]
+        # Decoder'ın gerçekten ilerleyip ilerlemediğini görmek için
+        got_first_time = [False]
 
-        def _watchdog(dec_proc=decoder_proc, main_proc_ref=main_proc, progress_ref=last_progress_time):
+        def _watchdog(dec_proc=decoder_proc, main_proc_ref=main_proc, progress_ref=last_progress_time, first_ref=got_first_time, start_ts=time.time()):
             while dec_proc.poll() is None:
                 time.sleep(5)
+                # Eğer 15 saniye geçti ve hâlâ time= görülmediyse decoder takıldı
+                if not first_ref[0] and time.time() - start_ts > 15:
+                    print("🚨 Decoder 15 saniyedir ilk frame'i üretemedi. Sonlandırılıyor.")
+                    try:
+                        dec_proc.kill()
+                    except Exception:
+                        pass
+                    break
                 if time.time() - progress_ref[0] > WATCHDOG_TIMEOUT_SECONDS:
                     print(f"🚨 Watchdog: {WATCHDOG_TIMEOUT_SECONDS} saniyedir ilerleme yok. Decoder sonlandırılıyor.")
                     try:
@@ -496,6 +521,7 @@ def start_m3u_stream():
             if "time=" in line:
                 time_match = re.search(r'time=(\d+):(\d+):(\d+\.\d+)', line)
                 if time_match:
+                    got_first_time[0] = True
                     hrs, mins, secs = time_match.groups()
                     played_seconds = int(hrs) * 3600 + int(mins) * 60 + float(secs)
                     current_stream_seconds = last_seconds + played_seconds
@@ -520,7 +546,7 @@ def start_m3u_stream():
 
         decoder_rc = decoder_proc.returncode
 
-        if decoder_rc == 0:
+        if decoder_rc == 0 and got_first_time[0]:
             print("✅ İçerik bitti, sıradakine geçiliyor. (RTMP KOPMADI - Ana FFmpeg hâlâ yayında)")
             write_step_summary(film_title, current_index, len(playlist), current_stream_seconds, status="✅ Bitti, sıradakine geçiliyor")
             current_index += 1
@@ -529,14 +555,15 @@ def start_m3u_stream():
             last_title = ""
             update_local_state(current_index, 0, "", "")
             consecutive_fast_failures = 0
-            # FIFO'da buffer kalmış olabilir; kısa bekleme
-            time.sleep(1)
+            time.sleep(0.5)
             continue
         else:
+            if decoder_rc == 0 and not got_first_time[0]:
+                print("⚠️ Decoder hiç frame üretmeden kapandı (returncode 0). FIFO/senkron sorunu olabilir.")
             if decoder_rc == -6:
                 print("⚠️ Decoder SIGABRT ile çöktü.")
             elif decoder_rc == -9:
-                print("⚠️ Decoder watchdog tarafından donma nedeniyle sonlandırıldı.")
+                print("⚠️ Decoder watchdog tarafından sonlandırıldı.")
             print(f"⚠️ Decoder koptu (Return Code: {decoder_rc}). Aynı saniyeden tekrar denenecek.")
             if stderr_tail:
                 print("🧾 Decoder son log satırları:")
