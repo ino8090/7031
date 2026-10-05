@@ -161,14 +161,14 @@ def start_seamless_stream():
             f'[tmp2]{time_drawtext}[v]'
         )
 
-    # Düzeltilmiş FFmpeg Komutu
+    # Düzeltilmiş ve Temizlenmiş FFmpeg Komutu
     command = [
         'ffmpeg',
         '-re',
         '-headers', headers_arg,
         '-protocol_whitelist', 'file,http,https,tcp,tls,crypto,concat',
-        '-unsafe', '0',
         '-f', 'concat',
+        '-safe', '0',
         '-stream_loop', '-1',
         '-i', CONCAT_FILE_NAME,
     ] + logo_inputs + [
@@ -218,7 +218,6 @@ def start_seamless_stream():
     while True:
         line = process.stderr.readline()
         if not line and process.poll() is not None:
-            # Hata detayını terminale yazdır ki neden düştüğü görülsün
             print(f"⚠️ FFmpeg durdu. Çıkış Kodu: {process.returncode}")
             break
 
@@ -230,7 +229,6 @@ def start_seamless_stream():
                 write_remaining_time_file(played_seconds)
                 last_progress_time[0] = time.time()
         elif "Error" in line or "error" in line or "Failed" in line:
-            # Kritik FFmpeg hatalarını doğrudan GitHub Actions/Konsol günlüğüne bas
             print(f"🔴 FFmpeg Hatası: {line.strip()}")
 
 
