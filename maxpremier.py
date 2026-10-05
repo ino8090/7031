@@ -258,10 +258,41 @@ def write_remaining_time_file(remaining_seconds):
     """
     try:
         formatted = format_hms(remaining_seconds)
-        with open('time.txt', 'w', encoding='utf-8') as f:
+        # Atomik yazım: drawtext yarım/boş dosya okumasın (takılma/yanıp sönme sebebi)
+        with open('time.txt.tmp', 'w', encoding='utf-8') as f:
             f.write(formatted)
+        os.replace('time.txt.tmp', 'time.txt')
     except Exception as e:
         print(f"⚠️ Kalan süre dosyası yazma hatası: {e}")
+
+
+# FFmpeg'den gelen ilerleme bilgisi (sayaç thread'i bunu yumuşatarak kullanır)
+_progress = {"pos": 0.0, "wall": 0.0, "started": False}
+
+
+def countdown_updater(proc, total_duration, initial_value):
+    """
+    time.txt'yi her saniye düzgün güncelleyen sayaç.
+    FFmpeg'in düzensiz gelen time= değerine bağlı kalmaz; son ilerleme noktasından
+    gerçek saat ile ilerler, geriye/ileriye sıçramaz.
+    """
+    shown = initial_value
+    last_written = None
+    while proc.poll() is None:
+        time.sleep(0.2)
+        if not _progress["started"]:
+            continue
+        # Takılma olursa sayaç koşup gitmesin: en fazla 1.5 sn tahmin yürüt
+        est = _progress["pos"] + min(time.time() - _progress["wall"], 1.5)
+        if total_duration > 0:
+            value = max(0, int(total_duration - est + 0.999))
+            shown = min(shown, value)      # sadece azalır
+        else:
+            value = int(est)
+            shown = max(shown, value)      # sadece artar
+        if shown != last_written:
+            write_remaining_time_file(shown)
+            last_written = shown
 
 
 def print_dashboard(title, index, playlist_len, seconds, status="🟢 Yayında"):
@@ -478,6 +509,15 @@ def start_m3u_stream():
             universal_newlines=True
         )
 
+        # Kalan süre sayacı: her saniye düzgün güncellenir
+        _progress["started"] = False
+        threading.Thread(
+            target=countdown_updater,
+            args=(process, total_duration_sec,
+                  initial_remaining if total_duration_sec > 0 else last_seconds),
+            daemon=True
+        ).start()
+
         # Sıradaki filmin süresini arka planda önceden hesapla
         if len(playlist) > 0:
             next_item = playlist[(current_index + 1) % len(playlist)]
@@ -520,15 +560,11 @@ def start_m3u_stream():
                     played_seconds = int(hrs) * 3600 + int(mins) * 60 + float(secs)
                     current_stream_seconds = last_seconds + played_seconds
 
-                    # Her kare ilerlemesinde KALAN SÜREYİ 'time.txt' dosyasına yaz
-                    if total_duration_sec > 0:
-                        remaining_seconds = max(0, total_duration_sec - current_stream_seconds)
-                        write_remaining_time_file(remaining_seconds)
-                    else:
-                        # Eğer ffprobe toplam süreyi çekemediyse geçen süreyi gösterir
-                        write_remaining_time_file(current_stream_seconds)
-
                     now = time.time()
+                    # İlerleme bilgisini sayaç thread'ine ver (time.txt'yi o yazar)
+                    _progress["pos"] = current_stream_seconds
+                    _progress["wall"] = now
+                    _progress["started"] = True
                     last_progress_time[0] = now
 
                     if now - last_save_time > 30:
