@@ -9,7 +9,6 @@ import re
 import json
 import requests
 import threading
-import signal
 import atexit
 from collections import deque
 
@@ -27,26 +26,19 @@ GITHUB_STEP_SUMMARY = os.getenv("GITHUB_STEP_SUMMARY")
 STREAM_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 STREAM_REFERER = "https://vidmody.com/"
 
-# Logo ve yazı opaklık ayarları (0.0 - 1.0 arası)
 LOGO_OPACITY = float(os.getenv("LOGO_OPACITY", "1.0"))
 TEXT_OPACITY = float(os.getenv("TEXT_OPACITY", "1.0"))
 BOLD_FONT_PATH = os.getenv("BOLD_FONT_PATH", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf")
 
-# Decoder'ı tek thread'e zorlamak için
 DECODER_THREADS = os.getenv("DECODER_THREADS", "1")
 
-# Watchdog: bu kadar saniye boyunca FFmpeg'den ilerleme (time=) gelmezse süreç donmuş kabul edilir.
 WATCHDOG_TIMEOUT_SECONDS = int(os.getenv("WATCHDOG_TIMEOUT_SECONDS", "45"))
-
-# Link değişip de aynı film olduğu tespit edildiğinde geriden devam edilecek süre
 LINK_CHANGE_REWIND_SECONDS = int(os.getenv("LINK_CHANGE_REWIND_SECONDS", "15"))
 
-# FIFO yolu - ana FFmpeg'in okuduğu isimli boru
 FIFO_PATH = os.getenv("FIFO_PATH", "/tmp/maxpremier_stream_fifo")
 
 
 def format_hms(total_seconds):
-    """Saniyeyi SS:DD:SS formatına çevirir."""
     total_seconds = max(0, int(total_seconds))
     hrs = total_seconds // 3600
     mins = (total_seconds % 3600) // 60
@@ -55,10 +47,6 @@ def format_hms(total_seconds):
 
 
 def get_video_duration_ffprobe(video_url):
-    """
-    FFprobe ile videonun GERÇEK toplam süresini çeker.
-    M3U8 ve HLS akışlarını doğru okuyabilmek için ekstra analiz parametreleri içerir.
-    """
     cmd = [
         'ffprobe',
         '-v', 'error',
@@ -72,7 +60,9 @@ def get_video_duration_ffprobe(video_url):
     ]
     try:
         output = subprocess.check_output(cmd, stderr=subprocess.STDOUT, timeout=15).decode('utf-8').strip()
-        duration = float(output)
+        # Sadece son satırdaki sayıyı al (ffmpeg log satırları karışabilir)
+        last_line = output.splitlines()[-1].strip()
+        duration = float(last_line)
         if duration > 0:
             print(f"⏱️ ffprobe ile toplam süre tespit edildi: {duration:.1f} saniye ({format_hms(duration)})")
             return duration
@@ -82,7 +72,6 @@ def get_video_duration_ffprobe(video_url):
 
 
 def get_local_state():
-    """Yerel state dosyasından son durumu okur."""
     if os.path.exists(STATE_FILE_NAME):
         if os.path.getsize(STATE_FILE_NAME) == 0:
             print(f"⚠️ Yerel state dosyası boş ({STATE_FILE_NAME}), 0'dan başlanıyor.")
@@ -104,7 +93,6 @@ def get_local_state():
 
 
 def update_local_state(index, seconds, url="", title=""):
-    """Son konumu yerel state dosyasına kaydeder."""
     try:
         data = {
             "last_index": int(index),
@@ -160,7 +148,6 @@ def download_logo():
 
 
 def write_title_file(title):
-    """Şu an oynayan içeriğin adını yazar."""
     try:
         with open('title.txt', 'w', encoding='utf-8') as f:
             f.write(title)
@@ -169,10 +156,6 @@ def write_title_file(title):
 
 
 def write_remaining_time_file(remaining_seconds):
-    """
-    Kalan süreyi 'time.txt' dosyasına dinamik olarak yazar.
-    FFmpeg drawtext bu dosyayı anlık reload=1 ile okuyacaktır.
-    """
     try:
         formatted = format_hms(remaining_seconds)
         with open('time.txt', 'w', encoding='utf-8') as f:
@@ -234,40 +217,21 @@ atexit.register(cleanup_fifo)
 
 
 # ===================== ANA FFMPEG (RTMP'YE BASAN) =====================
+# FIFO'dan MPEG-TS okur, stream'i COPY ederek RTMP'ye basar.
+# Video geçişlerinde BU SÜREÇ ASLA KAPANMAZ.
 
 def start_main_ffmpeg():
-    """
-    Ana FFmpeg süreci: FIFO'dan okur, RTMP'ye basar.
-    Video geçişlerinde BU SÜREÇ ASLA KAPANMAZ.
-    Giriş formatı (video: rawvideo, ses: pcm_s16le) decoder tarafında sabitlenir.
-    """
     cmd = [
         'ffmpeg',
+        '-hide_banner',
+        '-loglevel', 'warning',
         '-fflags', '+genpts+igndts+discardcorrupt',
         '-thread_queue_size', '4096',
-        '-f', 'rawvideo',
-        '-pix_fmt', 'yuv420p',
-        '-s', '1920x1080',
-        '-r', '25',
+        '-analyzeduration', '10000000',
+        '-probesize', '10000000',
+        '-f', 'mpegts',
         '-i', FIFO_PATH,
-        '-f', 's16le',
-        '-ar', '44100',
-        '-ac', '2',
-        '-thread_queue_size', '4096',
-        '-i', FIFO_PATH,
-        '-c:v', 'libx264',
-        '-preset', 'veryfast',
-        '-tune', 'zerolatency',
-        '-pix_fmt', 'yuv420p',
-        '-r', '25',
-        '-b:v', '2500k',
-        '-maxrate', '2500k',
-        '-bufsize', '3000k',
-        '-g', '50',
-        '-c:a', 'aac',
-        '-b:a', '128k',
-        '-ac', '2',
-        '-ar', '44100',
+        '-c', 'copy',
         '-flvflags', 'no_duration_filesize',
         '-f', 'flv',
         RTMP_SERVER
@@ -283,13 +247,10 @@ def start_main_ffmpeg():
 
 
 # ===================== DECODER FFMPEG (FIFO'YA YAZAN) =====================
+# Kaynak videoyu decode eder, logo+title+time overlay uygular,
+# H264+AAC olarak MPEG-TS container içinde FIFO'ya yazar.
 
 def build_decoder_command(target_stream_url, last_seconds, has_logo1, audio_only_url=None):
-    """
-    Decoder FFmpeg komutu: kaynak videoyu decode eder,
-    logo + title + time overlay uygular,
-    çıktıyı rawvideo + pcm_s16le olarak FIFO'ya yazar.
-    """
     headers_arg = (
         f"User-Agent: {STREAM_USER_AGENT}\r\n"
         f"Referer: https://vidmody.com/\r\n"
@@ -327,14 +288,12 @@ def build_decoder_command(target_stream_url, last_seconds, has_logo1, audio_only
         audio_map = ['-map', '0:a:0?']
         logo1_input_index = 1
 
-    # Sağ Alt Köşe: Film Adı
     title_drawtext = (
         f"drawtext=textfile='title.txt':reload=1:fontfile='{BOLD_FONT_PATH}':"
         f"fontcolor=white@{TEXT_OPACITY}:fontsize=19:"
         f"x=w-tw-20:y=h-th-20"
     )
 
-    # Sol Alt Köşe: KALAN SÜRE
     time_drawtext = (
         f"drawtext=textfile='time.txt':reload=1:fontfile='{BOLD_FONT_PATH}':"
         f"fontcolor=white@{TEXT_OPACITY}:fontsize=18:"
@@ -361,27 +320,33 @@ def build_decoder_command(target_stream_url, last_seconds, has_logo1, audio_only
             f'[tmp2]{time_drawtext}[v]'
         )
 
-    # FIFO'ya raw video + raw audio olarak yaz. Ana FFmpeg bu formatı bekliyor.
-    # -re YOK! Çünkü decoder mümkün olduğunca hızlı okumalı ve FIFO'ya yazmalı;
-    # gerçek zamanlı pacing'i ana FFmpeg'in kendisi yapıyor.
+    # MPEG-TS olarak FIFO'ya yaz. Bu container hem video hem sesi taşır.
+    # -re ile gerçek zamanlı pacing yapılır (yayın hızı korunur).
     command = [
         'ffmpeg',
         '-hide_banner',
         '-loglevel', 'info',
+        '-re',
     ] + input_args + logo_inputs + [
         '-filter_complex', filter_str,
         '-map', '[v]'
     ] + audio_map + [
-        '-c:v', 'rawvideo',
+        '-c:v', 'libx264',
+        '-preset', 'veryfast',
+        '-tune', 'zerolatency',
         '-pix_fmt', 'yuv420p',
         '-r', '25',
-        '-s', '1920x1080',
-        '-f', 'rawvideo',
-        FIFO_PATH,
-        '-c:a', 'pcm_s16le',
-        '-ar', '44100',
+        '-g', '50',
+        '-b:v', '2500k',
+        '-maxrate', '2500k',
+        '-bufsize', '3000k',
+        '-c:a', 'aac',
+        '-b:a', '128k',
         '-ac', '2',
-        '-f', 's16le',
+        '-ar', '44100',
+        '-muxdelay', '0',
+        '-muxpreload', '0',
+        '-f', 'mpegts',
         FIFO_PATH
     ]
     return command
@@ -400,22 +365,20 @@ def start_m3u_stream():
     download_logo()
     create_fifo()
 
-    # Ana FFmpeg'i BAŞLAT ve bir daha ASLA durdurma.
-    # RTMP bağlantısı bu süreç üzerinden sürekli açık kalır.
     main_proc = start_main_ffmpeg()
 
-    # Ana FFmpeg stderr'ini arka planda izle (log için)
-    def _main_logger(proc=main_proc):
-        for line in iter(proc.stderr.readline, ''):
-            if not line:
-                break
-            stripped = line.strip()
-            if stripped:
-                # Sadece önemli satırları göster
-                if any(k in stripped for k in ('error', 'Error', 'failed', 'Failed', 'Broken', 'Connection')):
+    def _main_logger(proc):
+        try:
+            for line in iter(proc.stderr.readline, ''):
+                if not line:
+                    break
+                stripped = line.strip()
+                if stripped and any(k in stripped for k in ('error', 'Error', 'failed', 'Failed', 'Broken', 'Connection', 'refused')):
                     print(f"[ANA-FFMPEG] {stripped}")
+        except Exception:
+            pass
 
-    threading.Thread(target=_main_logger, daemon=True).start()
+    threading.Thread(target=_main_logger, args=(main_proc,), daemon=True).start()
 
     current_index, last_seconds, last_url, last_title = get_local_state()
 
@@ -424,13 +387,12 @@ def start_m3u_stream():
     MAX_RETRY_DELAY_SECONDS = 120
 
     while True:
-        # Ana FFmpeg öldüyse tekrar başlat (RTMP kopsa bile geri gelir)
+        # Ana FFmpeg öldüyse yeniden başlat
         if main_proc.poll() is not None:
             print(f"⚠️ Ana FFmpeg beklenmedik şekilde kapandı (rc={main_proc.returncode}). Yeniden başlatılıyor...")
+            create_fifo()
             main_proc = start_main_ffmpeg()
             threading.Thread(target=_main_logger, args=(main_proc,), daemon=True).start()
-            # FIFO'yu yeniden oluştur
-            create_fifo()
 
         playlist = get_m3u_playlist(M3U_URL)
         if not playlist:
@@ -489,7 +451,6 @@ def start_m3u_stream():
         else:
             decoder_cmd = build_decoder_command(target_stream_url, last_seconds, has_logo1, None)
 
-        # Decoder'ı başlat
         decoder_proc = subprocess.Popen(
             decoder_cmd,
             stderr=subprocess.PIPE,
@@ -513,7 +474,6 @@ def start_m3u_stream():
                     except Exception as e:
                         print(f"⚠️ Watchdog süreç sonlandırma hatası: {e}")
                     break
-                # Ana FFmpeg öldüyse decoder'ı da durdur
                 if main_proc_ref.poll() is not None:
                     print("⚠️ Ana FFmpeg öldü, decoder de sonlandırılıyor.")
                     try:
@@ -569,8 +529,7 @@ def start_m3u_stream():
             last_title = ""
             update_local_state(current_index, 0, "", "")
             consecutive_fast_failures = 0
-            # Ana FFmpeg hâlâ çalışıyor, FIFO'ya yeni decoder bağlanacak.
-            # Küçük bir bekleme FIFO buffer'ının temizlenmesi için iyi olur.
+            # FIFO'da buffer kalmış olabilir; kısa bekleme
             time.sleep(1)
             continue
         else:
