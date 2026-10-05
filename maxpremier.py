@@ -10,22 +10,19 @@ import json
 import requests
 import threading
 import socket
-from collections import deque
 
 # ===================== AYARLAR =====================
 RTMP_URL = "rtmp://ssh101.bozztv.com:1935/ssh101"
 STREAM_KEY = os.getenv("STREAM_KEY") or "maxpremier"
 RTMP_SERVER = f"{RTMP_URL}/{STREAM_KEY}"
 
-# OBS Mantığı için Yerel Bağlantı Noktaları (Local Relay)
 LOCAL_RELAY_PORT = 18888
 LOCAL_STREAM_URL = f"http://127.0.0.1:{LOCAL_RELAY_PORT}/live.flv"
 
 M3U_URL = os.getenv("M3U_URL") or "https://raw.githubusercontent.com/ino8090/0101/refs/heads/main/mpremiuum.m3u"
 LOGO_URL = os.getenv("LOGO_URL") or "https://raw.githubusercontent.com/ino8090/0101/refs/heads/main/1787671958979.png"
 
-STATE_FILE_NAME = os.getenv("STATE_FILE_NAME", "maxpremier.json")
-GITHUB_STEP_SUMMARY = os.getenv("GITHUB_STEP_SUMMARY")
+STATE_FILE_NAME = os.getenv("STATE_FILE_NAME", "state_maxpremier.json")
 
 STREAM_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 STREAM_REFERER = "https://vidmody.com/"
@@ -63,7 +60,7 @@ def get_video_duration_ffprobe(video_url):
         output = subprocess.check_output(cmd, stderr=subprocess.STDOUT, timeout=15).decode('utf-8').strip()
         duration = float(output)
         if duration > 0:
-            print(f"⏱️️ ffprobe ile toplam süre tespit edildi: {duration:.1f} saniye ({format_hms(duration)})")
+            print(f"⏱ ffprobe ile toplam süre tespit edildi: {duration:.1f} saniye ({format_hms(duration)})")
             return duration
     except Exception as e:
         print(f"⚠️ ffprobe ile süre okunamadı: {e}")
@@ -157,88 +154,111 @@ def write_remaining_time_file(remaining_seconds):
         print(f"⚠️ Kalan süre dosyası yazma hatası: {e}")
 
 
-# ===================== OBS MANTIKLI LOCAL SERVER =====================
-def start_local_relay_server():
-    """
-    Yerel bir HTTP-FLV Relay sunucusu açar. Oynatıcı FFmpeg veriyi buraya basar,
-    Ana OBS Motoru FFmpeg veriyi buradan çekip BozzTV'ye kesintisiz aktarır.
-    """
-    server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    server_socket.bind(('127.0.0.1', LOCAL_RELAY_PORT))
-    server_socket.listen(5)
+# ===================== DÜZELTİLMİŞ LOCAL RELAY SERVER =====================
+class StreamRelayServer:
+    def __init__(self, host='127.0.0.1', port=LOCAL_RELAY_PORT):
+        self.host = host
+        self.port = port
+        self.subscribers = []
+        self.header_buffer = bytearray()
+        self.lock = threading.Lock()
+        self.has_stream = False
 
-    subscribers = []
-    lock = threading.Lock()
+    def start(self):
+        server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        server_socket.bind((self.host, self.port))
+        server_socket.listen(10)
 
-    def handle_client(client_socket):
+        def listen_loop():
+            while True:
+                client, _ = server_socket.accept()
+                threading.Thread(target=self.handle_client, args=(client,), daemon=True).start()
+
+        threading.Thread(target=listen_loop, daemon=True).start()
+        print(f"📡 OBS Yerel Akış Sunucusu ({self.host}:{self.port}) Başlatıldı.")
+
+    def handle_client(self, client_socket):
         try:
             request = client_socket.recv(1024).decode('utf-8', errors='ignore')
             if "POST" in request or "PUT" in request:
-                # Oynatıcı FFmpeg (Giriş Akışı)
+                # Oynatıcı FFmpeg Buraya Veri Gönderiyor
                 client_socket.sendall(b"HTTP/1.1 200 OK\r\n\r\n")
+                first_chunk = True
                 while True:
-                    data = client_socket.recv(4096)
+                    data = client_socket.recv(8192)
                     if not data:
                         break
-                    with lock:
-                        for sub in list(subscribers):
+                    
+                    with self.lock:
+                        self.has_stream = True
+                        if first_chunk or len(self.header_buffer) < 65536:
+                            self.header_buffer.extend(data)
+                            first_chunk = False
+
+                        for sub in list(self.subscribers):
                             try:
                                 sub.sendall(data)
                             except:
-                                subscribers.remove(sub)
+                                if sub in self.subscribers:
+                                    self.subscribers.remove(sub)
+                
+                with self.lock:
+                    self.has_stream = False
+                    self.header_buffer.clear()
+
             else:
-                # Ana OBS Motoru FFmpeg (Çıkış Akışı)
+                # OBS Motoru Buradan Veri Çekiyor
                 client_socket.sendall(b"HTTP/1.1 200 OK\r\nContent-Type: video/x-flv\r\n\r\n")
-                with lock:
-                    subscribers.append(client_socket)
-                while True:
+                with self.lock:
+                    if len(self.header_buffer) > 0:
+                        client_socket.sendall(bytes(self.header_buffer))
+                    self.subscribers.append(client_socket)
+                
+                # Bağlantıyı açık tut
+                while self.has_stream:
                     time.sleep(1)
         except:
             pass
         finally:
-            with lock:
-                if client_socket in subscribers:
-                    subscribers.remove(client_socket)
-            client_socket.close()
+            with self.lock:
+                if client_socket in self.subscribers:
+                    self.subscribers.remove(client_socket)
+            try:
+                client_socket.close()
+            except:
+                pass
 
-    def listen_loop():
-        while True:
-            client, _ = server_socket.accept()
-            t = threading.Thread(target=handle_client, args=(client,), daemon=True)
-            t.start()
 
-    t_server = threading.Thread(target=listen_loop, daemon=True)
-    t_server.start()
-    print("📡 OBS Yerel Akış Sunucusu (127.0.0.1) Başlatıldı.")
-
+relay_server = StreamRelayServer()
 
 def start_obs_master_stream():
-    """
-    OBS Ana Motoru: Yerel HTTP sunucusundan yayını alır ve BozzTV'ye KESİNTİSİZ iletir.
-    Film oynatıcı kapansa dahi bu motor BozzTV bağlantısını koparmaz.
-    """
-    time.sleep(2)
-    obs_command = [
-        'ffmpeg',
-        '-re',
-        '-i', LOCAL_STREAM_URL,
-        '-c:v', 'copy',
-        '-c:a', 'copy',
-        '-f', 'flv',
-        RTMP_SERVER
-    ]
-    
     def obs_runner():
         while True:
+            # Akış yerel sunucuya geline kadar bekle
+            while not relay_server.has_stream:
+                time.sleep(1)
+
             print("🎛️ OBS Ana Motoru BozzTV'ye Bağlanıyor...")
+            
+            obs_command = [
+                'ffmpeg',
+                '-y',
+                '-re',
+                '-i', LOCAL_STREAM_URL,
+                '-c:v', 'copy',
+                '-c:a', 'copy',
+                '-flvflags', 'no_duration_filesize',
+                '-f', 'flv',
+                RTMP_SERVER
+            ]
+            
             proc = subprocess.Popen(obs_command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             proc.wait()
-            print("⚠️ OBS Ana Motoru düştü, 3 saniye sonra tekrar bağlanıyor...")
-            time.sleep(3)
+            print("⚠️ OBS Ana Motoru düştü, yeniden bağlanmak için bekleniyor...")
+            time.sleep(2)
 
-    t_obs = threading.Thread(target=obs_runner, daemon=True)
-    t_obs.start()
+    threading.Thread(target=obs_runner, daemon=True).start()
 
 
 # ===================== ANA OYNATICI DÖNGÜSÜ =====================
@@ -248,7 +268,7 @@ def start_m3u_stream():
     print(f"🔧 RTMP hedefi      : {RTMP_SERVER}")
 
     download_logo()
-    start_local_relay_server()
+    relay_server.start()
     start_obs_master_stream()
 
     current_index, last_seconds, last_url, last_title = get_local_state()
@@ -337,7 +357,6 @@ def start_m3u_stream():
             logo_inputs = []
             filter_str = f'[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,fps=25[main];[main]{title_drawtext}[tmp2];[tmp2]{time_drawtext}[v]'
 
-        # Çıkışı BozzTV yerine yerel sanal OBS Relay sunucusuna veriyoruz
         command = [
             'ffmpeg'
         ] + input_args + logo_inputs + [
