@@ -405,7 +405,6 @@ def start_m3u_stream():
             '-analyzeduration', '10000000',
             '-probesize', '10000000',
             '-reconnect', '1',
-            '-reconnect_at_eof', '1',
             '-reconnect_streamed', '1',
             '-reconnect_delay_max', '10',
             '-rw_timeout', '10000000',
@@ -414,19 +413,26 @@ def start_m3u_stream():
 
         seek_args = ['-ss', str(last_seconds)] if last_seconds > 0 else []
 
+        def opts_for(url):
+            # HLS (.m3u8) segmentlerinde -reconnect_at_eof, her segment sonunda
+            # boş yere 0+1+3+7 sn'lik yeniden bağlanma döngüsüne sokup akışı kilitliyor.
+            if '.m3u8' in url.lower():
+                return list(input_options)
+            return input_options + ['-reconnect_at_eof', '1']
+
         if ";" in target_stream_url:
             video_url, audio_url = target_stream_url.split(";", 1)
             video_url = video_url.strip()
             audio_url = audio_url.strip()
 
             input_args = (
-                input_options + seek_args + ['-i', video_url] +
-                input_options + seek_args + ['-i', audio_url]
+                opts_for(video_url) + seek_args + ['-i', video_url] +
+                opts_for(audio_url) + seek_args + ['-i', audio_url]
             )
             audio_map = ['-map', '1:a:0?']
             logo1_input_index = 2
         else:
-            input_args = input_options + seek_args + ['-i', target_stream_url]
+            input_args = opts_for(target_stream_url) + seek_args + ['-i', target_stream_url]
             audio_map = ['-map', '0:a:0?']
             logo1_input_index = 1
 
