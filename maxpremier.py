@@ -47,6 +47,9 @@ DECODER_THREADS = os.getenv("DECODER_THREADS", "1")
 # Watchdog: bu kadar saniye boyunca FFmpeg'den ilerleme (time=) gelmezse süreç donmuş kabul edilir.
 WATCHDOG_TIMEOUT_SECONDS = int(os.getenv("WATCHDOG_TIMEOUT_SECONDS", "45"))
 
+# İlk kare gelene kadar (kaynak açılışı/analiz) tanınan süre. HLS kaynaklar geç açılabilir.
+WATCHDOG_STARTUP_SECONDS = int(os.getenv("WATCHDOG_STARTUP_SECONDS", "120"))
+
 # Link değişip de aynı film olduğu tespit edildiğinde geriden devam edilecek süre
 LINK_CHANGE_REWIND_SECONDS = int(os.getenv("LINK_CHANGE_REWIND_SECONDS", "15"))
 
@@ -418,23 +421,36 @@ def start_m3u_stream():
                 f"Origin: https://vidmody.com\r\n"
             )
 
-            input_options = [
-                '-re',
-                '-headers', headers_arg,
-                '-protocol_whitelist', 'file,http,https,tcp,tls,crypto',
-                '-err_detect', 'ignore_err',
-                '-fflags', '+genpts+discardcorrupt',
-                '-thread_queue_size', '1024',
-                '-max_interleave_delta', '0',
-                '-analyzeduration', '10000000',
-                '-probesize', '10000000',
-                '-reconnect', '1',
-                '-reconnect_at_eof', '1',
-                '-reconnect_streamed', '1',
-                '-reconnect_delay_max', '10',
-                '-rw_timeout', '10000000',
-                '-threads', DECODER_THREADS,
-            ]
+            def make_input_options(url):
+                is_hls = '.m3u8' in url.lower()
+                opts = [
+                    '-re',
+                    '-headers', headers_arg,
+                    '-protocol_whitelist', 'file,http,https,tcp,tls,crypto',
+                    '-err_detect', 'ignore_err',
+                    '-fflags', '+genpts+discardcorrupt',
+                    '-thread_queue_size', '1024',
+                    '-max_interleave_delta', '0',
+                    '-analyzeduration', '10000000',
+                    '-probesize', '10000000',
+                    '-reconnect', '1',
+                ]
+                if is_hls:
+                    # HLS: her segment sonunda "EOF'ta yeniden bağlan" denemesi 0+1+3+7 sn
+                    # gecikme yaratıyordu (watchdog'u tetikliyordu). HLS için kapalı.
+                    # Segment uzantıları .png/.woff gibi gizlenmiş olabilir.
+                    opts += ['-allowed_extensions', 'ALL',
+                             '-reconnect_streamed', '1',
+                             '-reconnect_delay_max', '3']
+                else:
+                    opts += ['-reconnect_at_eof', '1',
+                             '-reconnect_streamed', '1',
+                             '-reconnect_delay_max', '10']
+                opts += [
+                    '-rw_timeout', '10000000',
+                    '-threads', DECODER_THREADS,
+                ]
+                return opts
 
             seek_args = ['-ss', str(last_seconds)] if last_seconds > 0 else []
 
@@ -444,13 +460,13 @@ def start_m3u_stream():
                 audio_url = audio_url.strip()
 
                 input_args = (
-                    input_options + seek_args + ['-i', video_url] +
-                    input_options + seek_args + ['-i', audio_url]
+                    make_input_options(video_url) + seek_args + ['-i', video_url] +
+                    make_input_options(audio_url) + seek_args + ['-i', audio_url]
                 )
                 audio_map = ['-map', '1:a:0?']
                 logo1_input_index = 2
             else:
-                input_args = input_options + seek_args + ['-i', target_stream_url]
+                input_args = make_input_options(target_stream_url) + seek_args + ['-i', target_stream_url]
                 audio_map = ['-map', '0:a:0?']
                 logo1_input_index = 1
 
@@ -543,13 +559,15 @@ def start_m3u_stream():
             current_stream_seconds = last_seconds
             stderr_tail = deque(maxlen=40)
 
-            last_progress_time = [time.time()]
+            # [son ilerleme zamanı, ilk ilerleme geldi mi]
+            last_progress_time = [time.time(), False]
 
             def _watchdog(proc=process, progress_ref=last_progress_time):
                 while proc.poll() is None:
                     time.sleep(5)
-                    if time.time() - progress_ref[0] > WATCHDOG_TIMEOUT_SECONDS:
-                        print(f"🚨 Watchdog: {WATCHDOG_TIMEOUT_SECONDS} saniyedir ilerleme yok. Okuyucu zorla sonlandırılıyor.")
+                    limit = WATCHDOG_TIMEOUT_SECONDS if progress_ref[1] else WATCHDOG_STARTUP_SECONDS
+                    if time.time() - progress_ref[0] > limit:
+                        print(f"🚨 Watchdog: {limit} saniyedir ilerleme yok. Okuyucu zorla sonlandırılıyor.")
                         try:
                             proc.kill()
                         except Exception as e:
@@ -579,6 +597,7 @@ def start_m3u_stream():
 
                         now = time.time()
                         last_progress_time[0] = now
+                        last_progress_time[1] = True
 
                         if now - last_save_time > 30:
                             update_local_state(current_index, current_stream_seconds, target_stream_url, film_title)
