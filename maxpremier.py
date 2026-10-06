@@ -1,6 +1,17 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
+"""
+MİMARİ (RTMP kalıcı):
+
+  [Okuyucu FFmpeg (her film için ayrı)]  --MPEG-TS pipe-->  [Çıkış FFmpeg (HİÇ KAPANMAZ)]  --RTMP-->  Sunucu
+
+- Okuyucu: filmi açar, logo/yazı ekler, x264+AAC ile kodlar, MPEG-TS olarak stdout'a yazar.
+- Çıkış: stdin'den MPEG-TS okur, yeniden kodlamadan (-c copy) RTMP'ye gönderir.
+- Film bitince sadece okuyucu kapanır; çıkış süreci ve RTMP bağlantısı açık kalır.
+- Sadece RTMP/çıkış süreci gerçekten ölürse (sunucu koparsa vb.) yeniden başlatılır.
+"""
+
 import subprocess
 import sys
 import time
@@ -40,6 +51,92 @@ WATCHDOG_TIMEOUT_SECONDS = int(os.getenv("WATCHDOG_TIMEOUT_SECONDS", "45"))
 LINK_CHANGE_REWIND_SECONDS = int(os.getenv("LINK_CHANGE_REWIND_SECONDS", "15"))
 
 
+# ===================== KALICI RTMP ÇIKIŞ SÜRECİ =====================
+class RtmpOutput:
+    """
+    Tek bir FFmpeg süreci: stdin'den MPEG-TS alır, RTMP'ye kopyalar.
+    Filmler arası geçişte KAPANMAZ.
+    """
+
+    def __init__(self, rtmp_url):
+        self.rtmp_url = rtmp_url
+        self.proc = None
+        self.failed = threading.Event()
+        self.stderr_tail = deque(maxlen=30)
+
+    def start(self):
+        self.stop(force=True)
+        self.failed.clear()
+        self.stderr_tail.clear()
+        cmd = [
+            'ffmpeg',
+            '-hide_banner',
+            '-loglevel', 'warning',
+            '-nostats',
+            '-fflags', '+genpts+nobuffer',
+            '-analyzeduration', '3000000',
+            '-probesize', '3000000',
+            '-f', 'mpegts',
+            '-i', 'pipe:0',
+            '-map', '0:v:0',
+            '-map', '0:a:0?',
+            '-c', 'copy',
+            '-flvflags', 'no_duration_filesize',
+            '-f', 'flv',
+            self.rtmp_url,
+        ]
+        self.proc = subprocess.Popen(
+            cmd,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+        )
+        threading.Thread(target=self._drain_stderr, args=(self.proc,), daemon=True).start()
+        print(f"🔌 Kalıcı RTMP çıkış süreci başlatıldı => {self.rtmp_url}")
+
+    def _drain_stderr(self, proc):
+        """stderr dolup süreci kilitlemesin diye sürekli okunur."""
+        try:
+            for raw in iter(proc.stderr.readline, b''):
+                self.stderr_tail.append(raw.decode('utf-8', 'replace').rstrip())
+        except Exception:
+            pass
+
+    def alive(self):
+        return self.proc is not None and self.proc.poll() is None
+
+    def write(self, data):
+        try:
+            self.proc.stdin.write(data)
+            self.proc.stdin.flush()
+            return True
+        except (BrokenPipeError, OSError, ValueError, AttributeError):
+            self.failed.set()
+            return False
+
+    def stop(self, force=False):
+        p = self.proc
+        if p is None:
+            return
+        self.proc = None
+        try:
+            if force:
+                p.kill()
+            else:
+                p.stdin.close()
+        except Exception:
+            pass
+        try:
+            p.wait(timeout=5)
+        except Exception:
+            try:
+                p.kill()
+                p.wait(timeout=5)
+            except Exception:
+                pass
+
+
+# ===================== YARDIMCI FONKSİYONLAR =====================
 def format_hms(total_seconds):
     """Saniyeyi SS:DD:SS formatına çevirir."""
     total_seconds = max(0, int(total_seconds))
@@ -47,93 +144,6 @@ def format_hms(total_seconds):
     mins = (total_seconds % 3600) // 60
     secs = total_seconds % 60
     return f"{hrs:02d}:{mins:02d}:{secs:02d}"
-
-
-# ===================== KALICI RTMP YAYINCISI =====================
-class RtmpPublisher:
-    """
-    RTMP sunucusuna SÜREKLİ bağlı kalan tek bir FFmpeg süreci.
-    Filmleri kodlayan FFmpeg süreçleri çıktılarını (MPEG-TS) bu sürecin stdin'ine yazar.
-    Film değişince sadece kodlayıcı süreç yenilenir; RTMP bağlantısı hiç kapanmaz.
-    """
-
-    def __init__(self):
-        self.proc = None
-        self.started_at = 0.0
-        self.tail = deque(maxlen=30)
-
-    def alive(self):
-        return self.proc is not None and self.proc.poll() is None
-
-    def ensure_running(self):
-        if self.alive():
-            return
-        self.stop()
-        cmd = [
-            'ffmpeg', '-hide_banner', '-loglevel', 'warning',
-            '-fflags', '+genpts',
-            '-analyzeduration', '3000000',
-            '-probesize', '3000000',
-            '-f', 'mpegts', '-i', 'pipe:0',
-            '-c', 'copy',
-            '-bsf:a', 'aac_adtstoasc',
-            '-flvflags', 'no_duration_filesize',
-            '-f', 'flv',
-            RTMP_SERVER
-        ]
-        print(f"📡 Kalıcı RTMP yayıncısı başlatılıyor => {RTMP_SERVER}")
-        self.proc = subprocess.Popen(
-            cmd,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-            bufsize=0
-        )
-        self.started_at = time.time()
-        threading.Thread(target=self._drain, args=(self.proc,), daemon=True).start()
-
-    def _drain(self, proc):
-        try:
-            for raw in iter(proc.stderr.readline, b''):
-                self.tail.append(raw.decode('utf-8', 'replace').rstrip())
-        except Exception:
-            pass
-
-    def clock(self):
-        """Yayıncı başladığından beri geçen gerçek süre (zaman damgası sürekliliği için)."""
-        return time.time() - self.started_at
-
-    def stop(self):
-        if self.proc is None:
-            return
-        try:
-            self.proc.stdin.close()
-        except Exception:
-            pass
-        try:
-            if self.proc.poll() is None:
-                self.proc.kill()
-            self.proc.wait(timeout=5)
-        except Exception:
-            pass
-        self.proc = None
-
-
-publisher = RtmpPublisher()
-
-# Sıradaki filmin süresi, mevcut film oynarken önceden hesaplanır (geçiş boşluğunu kısaltır)
-_duration_cache = {}
-
-
-def probe_url_of(stream_url):
-    return stream_url.split(";")[0].strip() if ";" in stream_url else stream_url
-
-
-def prefetch_duration(stream_url):
-    url = probe_url_of(stream_url)
-    duration = get_video_duration_ffprobe(url)
-    if duration > 0:
-        _duration_cache[url] = duration
 
 
 def get_video_duration_ffprobe(video_url):
@@ -153,9 +163,8 @@ def get_video_duration_ffprobe(video_url):
         video_url
     ]
     try:
-        output = subprocess.check_output(cmd, stderr=subprocess.STDOUT, timeout=15).decode('utf-8', 'replace').strip()
-        # stderr uyarıları (ör. SPS hataları) karışabilir; süre her zaman son satırdadır
-        duration = float(output.splitlines()[-1].strip())
+        output = subprocess.check_output(cmd, stderr=subprocess.STDOUT, timeout=15).decode('utf-8').strip()
+        duration = float(output)
         if duration > 0:
             print(f"⏱️ ffprobe ile toplam süre tespit edildi: {duration:.1f} saniye ({format_hms(duration)})")
             return duration
@@ -258,41 +267,10 @@ def write_remaining_time_file(remaining_seconds):
     """
     try:
         formatted = format_hms(remaining_seconds)
-        # Atomik yazım: drawtext yarım/boş dosya okumasın (takılma/yanıp sönme sebebi)
-        with open('time.txt.tmp', 'w', encoding='utf-8') as f:
+        with open('time.txt', 'w', encoding='utf-8') as f:
             f.write(formatted)
-        os.replace('time.txt.tmp', 'time.txt')
     except Exception as e:
         print(f"⚠️ Kalan süre dosyası yazma hatası: {e}")
-
-
-# FFmpeg'den gelen ilerleme bilgisi (sayaç thread'i bunu yumuşatarak kullanır)
-_progress = {"pos": 0.0, "wall": 0.0, "started": False}
-
-
-def countdown_updater(proc, total_duration, initial_value):
-    """
-    time.txt'yi her saniye düzgün güncelleyen sayaç.
-    FFmpeg'in düzensiz gelen time= değerine bağlı kalmaz; son ilerleme noktasından
-    gerçek saat ile ilerler, geriye/ileriye sıçramaz.
-    """
-    shown = initial_value
-    last_written = None
-    while proc.poll() is None:
-        time.sleep(0.2)
-        if not _progress["started"]:
-            continue
-        # Takılma olursa sayaç koşup gitmesin: en fazla 1.5 sn tahmin yürüt
-        est = _progress["pos"] + min(time.time() - _progress["wall"], 1.5)
-        if total_duration > 0:
-            value = max(0, int(total_duration - est + 0.999))
-            shown = min(shown, value)      # sadece azalır
-        else:
-            value = int(est)
-            shown = max(shown, value)      # sadece artar
-        if shown != last_written:
-            write_remaining_time_file(shown)
-            last_written = shown
 
 
 def print_dashboard(title, index, playlist_len, seconds, status="🟢 Yayında"):
@@ -324,6 +302,44 @@ def write_step_summary(title, index, playlist_len, seconds, status="🟢 Yayınd
         print(f"⚠️ Step summary yazma hatası: {e}")
 
 
+def iter_stderr_lines(stream):
+    """FFmpeg stderr'ini hem \\r hem \\n ile satırlara böler (time= satırları \\r ile gelir)."""
+    fd = stream.fileno()
+    buf = b''
+    while True:
+        chunk = os.read(fd, 4096)
+        if not chunk:
+            if buf.strip():
+                yield buf.decode('utf-8', 'replace')
+            return
+        buf += chunk
+        parts = re.split(rb'[\r\n]', buf)
+        buf = parts.pop()
+        for p in parts:
+            if p:
+                yield p.decode('utf-8', 'replace')
+
+
+def pump_reader_to_output(reader, output):
+    """Okuyucunun stdout'unu (MPEG-TS) kalıcı RTMP çıkışına aktarır."""
+    fd = reader.stdout.fileno()
+    while True:
+        try:
+            chunk = os.read(fd, 65536)
+        except OSError:
+            break
+        if not chunk:
+            break
+        if not output.write(chunk):
+            # Çıkış süreci/RTMP koptu: okuyucuyu durdur, ana döngü çıkışı yeniden başlatacak.
+            try:
+                reader.kill()
+            except Exception:
+                pass
+            break
+
+
+# ===================== ANA DÖNGÜ =====================
 def start_m3u_stream():
     print(f"🔧 Kullanılan M3U   : {M3U_URL}")
     print(f"🔧 Kullanılan Logo  : {LOGO_URL}")
@@ -339,313 +355,309 @@ def start_m3u_stream():
     FAST_FAIL_THRESHOLD_SECONDS = 20
     MAX_RETRY_DELAY_SECONDS = 120
 
-    while True:
-        playlist = get_m3u_playlist(M3U_URL)
-        if not playlist:
-            time.sleep(10)
-            continue
+    output = RtmpOutput(RTMP_SERVER)
 
-        if current_index >= len(playlist):
-            current_index = 0
-            last_seconds = 0
-            last_url = ""
-            last_title = ""
+    try:
+        while True:
+            playlist = get_m3u_playlist(M3U_URL)
+            if not playlist:
+                time.sleep(10)
+                continue
 
-        current_item = playlist[current_index]
-        target_stream_url = current_item["url"]
-        film_title = current_item["title"]
-
-        if last_seconds > 0 and last_url and target_stream_url != last_url:
-            if last_title and film_title == last_title:
-                old_seconds = last_seconds
-                last_seconds = max(0, last_seconds - LINK_CHANGE_REWIND_SECONDS)
-                print(f"🔄 Bu sıradaki ({current_index + 1}) içeriğin linki değişmiş, "
-                      f"ancak film aynı ('{film_title}'). {old_seconds}s yerine "
-                      f"{last_seconds}s'den devam edilecek.")
-            else:
-                print(f"🆕 Bu sıradaki ({current_index + 1}) içerik gerçekten değişmiş, baştan başlatılacak.")
+            if current_index >= len(playlist):
+                current_index = 0
                 last_seconds = 0
+                last_url = ""
+                last_title = ""
 
-        last_url = target_stream_url
-        last_title = film_title
+            current_item = playlist[current_index]
+            target_stream_url = current_item["url"]
+            film_title = current_item["title"]
 
-        write_title_file(film_title)
+            if last_seconds > 0 and last_url and target_stream_url != last_url:
+                if last_title and film_title == last_title:
+                    old_seconds = last_seconds
+                    last_seconds = max(0, last_seconds - LINK_CHANGE_REWIND_SECONDS)
+                    print(f"🔄 Bu sıradaki ({current_index + 1}) içeriğin linki değişmiş, "
+                          f"ancak film aynı ('{film_title}'). {old_seconds}s yerine "
+                          f"{last_seconds}s'den devam edilecek.")
+                else:
+                    print(f"🆕 Bu sıradaki ({current_index + 1}) içerik gerçekten değişmiş, baştan başlatılacak.")
+                    last_seconds = 0
 
-        # Videonun Gerçek Toplam Süresini Al (önceden hesaplandıysa cache'ten kullan)
-        probe_url = probe_url_of(target_stream_url)
-        total_duration_sec = _duration_cache.pop(probe_url, 0.0)
-        if total_duration_sec <= 0:
+            last_url = target_stream_url
+            last_title = film_title
+
+            write_title_file(film_title)
+
+            # Videonun Gerçek Toplam Süresini Al
+            probe_url = target_stream_url.split(";")[0].strip() if ";" in target_stream_url else target_stream_url
             total_duration_sec = get_video_duration_ffprobe(probe_url)
 
-        # İlk kalan süreyi dosyaya yaz
-        initial_remaining = max(0, total_duration_sec - last_seconds) if total_duration_sec > 0 else 0
-        write_remaining_time_file(initial_remaining)
+            # İlk kalan süreyi dosyaya yaz
+            initial_remaining = max(0, total_duration_sec - last_seconds) if total_duration_sec > 0 else 0
+            write_remaining_time_file(initial_remaining)
 
-        print("=" * 60)
-        print("📺 Maxanimasyon Canlı Aktarım Yayını (1080p 25fps - 2500k) Başlatılıyor")
-        print(f"🎬 Oynatılan İçerik  : {film_title}")
-        print(f"⏱️ Başlangıç Saniyesi: {last_seconds}")
-        print(f"⏱️ Toplam Süre      : {format_hms(total_duration_sec) if total_duration_sec > 0 else 'Bilinmiyor'}")
-        print(f"🚀 Hedef RTMP       : {RTMP_SERVER}")
+            print("=" * 60)
+            print("📺 Maxanimasyon Canlı Aktarım Yayını (1080p 25fps - 2500k) Başlatılıyor")
+            print(f"🎬 Oynatılan İçerik  : {film_title}")
+            print(f"⏱️ Başlangıç Saniyesi: {last_seconds}")
+            print(f"⏱️ Toplam Süre      : {format_hms(total_duration_sec) if total_duration_sec > 0 else 'Bilinmiyor'}")
+            print(f"🚀 Hedef RTMP       : {RTMP_SERVER}")
 
-        headers_arg = (
-            f"User-Agent: {STREAM_USER_AGENT}\r\n"
-            f"Referer: https://vidmody.com/\r\n"
-            f"Origin: https://vidmody.com\r\n"
-        )
-
-        input_options = [
-            '-re',
-            '-headers', headers_arg,
-            '-protocol_whitelist', 'file,http,https,tcp,tls,crypto',
-            '-err_detect', 'ignore_err',
-            '-fflags', '+genpts+discardcorrupt',
-            '-thread_queue_size', '1024',
-            '-max_interleave_delta', '0',
-            '-analyzeduration', '10000000',
-            '-probesize', '10000000',
-            '-reconnect', '1',
-            '-reconnect_streamed', '1',
-            '-reconnect_delay_max', '10',
-            '-rw_timeout', '10000000',
-            '-threads', DECODER_THREADS,
-        ]
-
-        seek_args = ['-ss', str(last_seconds)] if last_seconds > 0 else []
-
-        def opts_for(url):
-            # HLS (.m3u8) segmentlerinde -reconnect_at_eof, her segment sonunda
-            # boş yere 0+1+3+7 sn'lik yeniden bağlanma döngüsüne sokup akışı kilitliyor.
-            if '.m3u8' in url.lower():
-                return list(input_options)
-            return input_options + ['-reconnect_at_eof', '1']
-
-        if ";" in target_stream_url:
-            video_url, audio_url = target_stream_url.split(";", 1)
-            video_url = video_url.strip()
-            audio_url = audio_url.strip()
-
-            input_args = (
-                opts_for(video_url) + seek_args + ['-i', video_url] +
-                opts_for(audio_url) + seek_args + ['-i', audio_url]
-            )
-            audio_map = ['-map', '1:a:0?']
-            logo1_input_index = 2
-        else:
-            input_args = opts_for(target_stream_url) + seek_args + ['-i', target_stream_url]
-            audio_map = ['-map', '0:a:0?']
-            logo1_input_index = 1
-
-        print_dashboard(film_title, current_index, len(playlist), last_seconds, status="🟡 Başlatılıyor")
-        write_step_summary(film_title, current_index, len(playlist), last_seconds, status="🟡 Başlatılıyor")
-
-        has_logo1 = os.path.exists('logo.png') and os.path.getsize('logo.png') > 0
-
-        # Sağ Alt Köşe: Film Adı
-        title_drawtext = (
-            f"drawtext=textfile='title.txt':reload=1:fontfile='{BOLD_FONT_PATH}':"
-            f"fontcolor=white@{TEXT_OPACITY}:fontsize=19:"
-            f"x=w-tw-20:y=h-th-20"
-        )
-
-        # Sol Alt Köşe: DİNAMİK KALAN SÜRE
-        # Sayaç dosyadan değil, doğrudan videonun kare zamanından (t) hesaplanır.
-        # Böylece görüntüyle birebir senkron ve her saniye pürüzsüz ilerler.
-        if total_duration_sec > 0:
-            base_remaining = max(0.0, total_duration_sec - last_seconds)
-            rem_expr = f"ceil(max(0\\,{base_remaining:.3f}-t))"
-        else:
-            rem_expr = f"floor({float(last_seconds):.3f}+t)"  # süre bilinmiyorsa geçen süre
-        time_text = (
-            f"%{{eif\\:floor({rem_expr}/3600)\\:d\\:2}}\\:"
-            f"%{{eif\\:mod(floor({rem_expr}/60)\\,60)\\:d\\:2}}\\:"
-            f"%{{eif\\:mod({rem_expr}\\,60)\\:d\\:2}}"
-        )
-        time_drawtext = (
-            f"drawtext=text='{time_text}':fontfile='{BOLD_FONT_PATH}':"
-            f"fontcolor=white@{TEXT_OPACITY}:fontsize=18:"
-            f"x=20:y=h-th-20"
-        )
-
-        if has_logo1:
-            logo_inputs = ['-i', 'logo.png']
-            filter_str = (
-                '[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,'
-                'pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,fps=25[main];'
-                f'[{logo1_input_index}:v]scale=-2:85,format=rgba,'
-                f'colorchannelmixer=aa={LOGO_OPACITY}[logo1];'
-                '[main][logo1]overlay=50:50[tmp1];'
-                f'[tmp1]{title_drawtext}[tmp2];'
-                f'[tmp2]{time_drawtext}[v]'
-            )
-        else:
-            logo_inputs = []
-            filter_str = (
-                '[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,'
-                'pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,fps=25[main];'
-                f'[main]{title_drawtext}[tmp2];'
-                f'[tmp2]{time_drawtext}[v]'
+            headers_arg = (
+                f"User-Agent: {STREAM_USER_AGENT}\r\n"
+                f"Referer: https://vidmody.com/\r\n"
+                f"Origin: https://vidmody.com\r\n"
             )
 
-        # Kalıcı yayıncı ölmüşse (gerçek bir kopma) yeniden başlat
-        publisher.ensure_running()
+            input_options = [
+                '-re',
+                '-headers', headers_arg,
+                '-protocol_whitelist', 'file,http,https,tcp,tls,crypto',
+                '-err_detect', 'ignore_err',
+                '-fflags', '+genpts+discardcorrupt',
+                '-thread_queue_size', '1024',
+                '-max_interleave_delta', '0',
+                '-analyzeduration', '10000000',
+                '-probesize', '10000000',
+                '-reconnect', '1',
+                '-reconnect_at_eof', '1',
+                '-reconnect_streamed', '1',
+                '-reconnect_delay_max', '10',
+                '-rw_timeout', '10000000',
+                '-threads', DECODER_THREADS,
+            ]
 
-        # Zaman damgaları filmler arasında kesintisiz ilerlesin diye
-        # yayıncının başlangıcından beri geçen gerçek süre kadar kaydırılır.
-        ts_offset = publisher.clock() + 1.0
+            seek_args = ['-ss', str(last_seconds)] if last_seconds > 0 else []
 
-        command = [
-            'ffmpeg'
-        ] + input_args + logo_inputs + [
-            '-filter_complex', filter_str,
-            '-map', '[v]'
-        ] + audio_map + [
-            '-c:v', 'libx264',
-            '-preset', 'veryfast',
-            '-pix_fmt', 'yuv420p',
-            '-r', '25',
-            '-b:v', '2500k',
-            '-maxrate', '2500k',
-            '-bufsize', '3000k',
-            '-g', '50',
-            '-c:a', 'aac',
-            '-b:a', '128k',
-            '-ac', '2',
-            '-ar', '44100',
-            '-output_ts_offset', f'{ts_offset:.3f}',
-            '-flush_packets', '1',
-            '-f', 'mpegts',
-            'pipe:1'
-        ]
+            if ";" in target_stream_url:
+                video_url, audio_url = target_stream_url.split(";", 1)
+                video_url = video_url.strip()
+                audio_url = audio_url.strip()
 
-        print("▶ FFmpeg başlatıldı, 1080p 25fps @ 2500k yayın kalıcı yayıncıya iletiliyor...")
+                input_args = (
+                    input_options + seek_args + ['-i', video_url] +
+                    input_options + seek_args + ['-i', audio_url]
+                )
+                audio_map = ['-map', '1:a:0?']
+                logo1_input_index = 2
+            else:
+                input_args = input_options + seek_args + ['-i', target_stream_url]
+                audio_map = ['-map', '0:a:0?']
+                logo1_input_index = 1
 
-        process = subprocess.Popen(
-            command,
-            stdout=publisher.proc.stdin,   # Çıktı kalıcı yayıncıya akar; bu süreç bitince boru kapanmaz
-            stderr=subprocess.PIPE,
-            universal_newlines=True
-        )
+            print_dashboard(film_title, current_index, len(playlist), last_seconds, status="🟡 Başlatılıyor")
+            write_step_summary(film_title, current_index, len(playlist), last_seconds, status="🟡 Başlatılıyor")
 
-        # Sıradaki filmin süresini arka planda önceden hesapla
-        if len(playlist) > 0:
-            next_item = playlist[(current_index + 1) % len(playlist)]
-            threading.Thread(target=prefetch_duration, args=(next_item["url"],), daemon=True).start()
+            has_logo1 = os.path.exists('logo.png') and os.path.getsize('logo.png') > 0
 
-        last_save_time = time.time()
-        last_dashboard_time = time.time()
-        current_stream_seconds = last_seconds
-        stderr_tail = deque(maxlen=40)
+            # Sağ Alt Köşe: Film Adı
+            title_drawtext = (
+                f"drawtext=textfile='title.txt':reload=1:fontfile='{BOLD_FONT_PATH}':"
+                f"fontcolor=white@{TEXT_OPACITY}:fontsize=19:"
+                f"x=w-tw-20:y=h-th-20"
+            )
 
-        last_progress_time = [time.time()]
+            # Sol Alt Köşe: GERÇEK KALAN SÜRE (time.txt dosyasından anlık dinamik okunur)
+            time_drawtext = (
+                f"drawtext=textfile='time.txt':reload=1:fontfile='{BOLD_FONT_PATH}':"
+                f"fontcolor=white@{TEXT_OPACITY}:fontsize=18:"
+                f"x=20:y=h-th-20"
+            )
 
-        def _watchdog(proc=process, progress_ref=last_progress_time):
-            while proc.poll() is None:
-                time.sleep(5)
-                if time.time() - progress_ref[0] > WATCHDOG_TIMEOUT_SECONDS:
-                    print(f"🚨 Watchdog: {WATCHDOG_TIMEOUT_SECONDS} saniyedir ilerleme yok. Süreç zorla sonlandırılıyor.")
-                    try:
-                        proc.kill()
-                    except Exception as e:
-                        print(f"⚠️ Watchdog süreç sonlandırma hatası: {e}")
-                    break
+            if has_logo1:
+                logo_inputs = ['-i', 'logo.png']
+                filter_str = (
+                    '[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,'
+                    'pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,fps=25[main];'
+                    f'[{logo1_input_index}:v]scale=-2:85,format=rgba,'
+                    f'colorchannelmixer=aa={LOGO_OPACITY}[logo1];'
+                    '[main][logo1]overlay=50:50[tmp1];'
+                    f'[tmp1]{title_drawtext}[tmp2];'
+                    f'[tmp2]{time_drawtext}[v]'
+                )
+            else:
+                logo_inputs = []
+                filter_str = (
+                    '[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,'
+                    'pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,fps=25[main];'
+                    f'[main]{title_drawtext}[tmp2];'
+                    f'[tmp2]{time_drawtext}[v]'
+                )
 
-        watchdog_thread = threading.Thread(target=_watchdog, daemon=True)
-        watchdog_thread.start()
+            # OKUYUCU: kodlar ve MPEG-TS olarak stdout'a yazar (RTMP'ye DOKUNMAZ)
+            command = [
+                'ffmpeg'
+            ] + input_args + logo_inputs + [
+                '-filter_complex', filter_str,
+                '-map', '[v]'
+            ] + audio_map + [
+                '-c:v', 'libx264',
+                '-preset', 'veryfast',
+                '-pix_fmt', 'yuv420p',
+                '-r', '25',
+                '-b:v', '2500k',
+                '-maxrate', '2500k',
+                '-bufsize', '3000k',
+                '-g', '50',
+                '-c:a', 'aac',
+                '-b:a', '128k',
+                '-ac', '2',
+                '-ar', '44100',
+                '-flush_packets', '1',
+                '-muxdelay', '0',
+                '-muxpreload', '0',
+                '-mpegts_flags', '+resend_headers',
+                '-f', 'mpegts',
+                'pipe:1'
+            ]
 
-        while True:
-            line = process.stderr.readline()
-            if not line and process.poll() is not None:
-                break
+            # Kalıcı RTMP çıkışı ölmüşse (veya ilk açılışsa) başlat
+            if not output.alive():
+                output.start()
 
-            if line:
+            print("▶ Okuyucu FFmpeg başlatıldı, 1080p 25fps @ 2500k kalıcı RTMP'ye aktarılıyor...")
+
+            process = subprocess.Popen(
+                command,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+
+            pump_thread = threading.Thread(
+                target=pump_reader_to_output, args=(process, output), daemon=True
+            )
+            pump_thread.start()
+
+            last_save_time = time.time()
+            last_dashboard_time = time.time()
+            current_stream_seconds = last_seconds
+            stderr_tail = deque(maxlen=40)
+
+            last_progress_time = [time.time()]
+
+            def _watchdog(proc=process, progress_ref=last_progress_time):
+                while proc.poll() is None:
+                    time.sleep(5)
+                    if time.time() - progress_ref[0] > WATCHDOG_TIMEOUT_SECONDS:
+                        print(f"🚨 Watchdog: {WATCHDOG_TIMEOUT_SECONDS} saniyedir ilerleme yok. Okuyucu zorla sonlandırılıyor.")
+                        try:
+                            proc.kill()
+                        except Exception as e:
+                            print(f"⚠️ Watchdog süreç sonlandırma hatası: {e}")
+                        break
+
+            watchdog_thread = threading.Thread(target=_watchdog, daemon=True)
+            watchdog_thread.start()
+
+            for line in iter_stderr_lines(process.stderr):
                 stderr_tail.append(line.rstrip())
 
-            if "time=" in line:
-                time_match = re.search(r'time=(\d+):(\d+):(\d+\.\d+)', line)
-                if time_match:
-                    hrs, mins, secs = time_match.groups()
-                    # FFmpeg'in time= değeri output_ts_offset'i İÇERMEZ, doğrudan oynatılan süredir
-                    played_seconds = int(hrs) * 3600 + int(mins) * 60 + float(secs)
-                    current_stream_seconds = last_seconds + played_seconds
+                if "time=" in line:
+                    time_match = re.search(r'time=(\d+):(\d+):(\d+\.\d+)', line)
+                    if time_match:
+                        hrs, mins, secs = time_match.groups()
+                        played_seconds = int(hrs) * 3600 + int(mins) * 60 + float(secs)
+                        current_stream_seconds = last_seconds + played_seconds
 
-                    now = time.time()
-                    # İlerleme bilgisini sayaç thread'ine ver (time.txt'yi o yazar)
-                    _progress["pos"] = current_stream_seconds
-                    _progress["wall"] = now
-                    _progress["started"] = True
-                    last_progress_time[0] = now
+                        # Her kare ilerlemesinde KALAN SÜREYİ 'time.txt' dosyasına yaz
+                        if total_duration_sec > 0:
+                            remaining_seconds = max(0, total_duration_sec - current_stream_seconds)
+                            write_remaining_time_file(remaining_seconds)
+                        else:
+                            # Eğer ffprobe toplam süreyi çekemediyse geçen süreyi gösterir
+                            write_remaining_time_file(current_stream_seconds)
 
-                    if now - last_save_time > 30:
-                        update_local_state(current_index, current_stream_seconds, target_stream_url, film_title)
-                        last_save_time = now
+                        now = time.time()
+                        last_progress_time[0] = now
 
-                    if now - last_dashboard_time > 30:
-                        print_dashboard(film_title, current_index, len(playlist), current_stream_seconds)
-                        write_step_summary(film_title, current_index, len(playlist), current_stream_seconds)
-                        last_dashboard_time = now
+                        if now - last_save_time > 30:
+                            update_local_state(current_index, current_stream_seconds, target_stream_url, film_title)
+                            last_save_time = now
 
-        if process.returncode == 0:
-            print("✅ İçerik bitti, sıradakine geçiliyor (RTMP bağlantısı açık kalıyor).")
-            write_step_summary(film_title, current_index, len(playlist), current_stream_seconds, status="✅ Bitti, sıradakine geçiliyor")
-            current_index += 1
-            last_seconds = 0
-            last_url = ""
-            last_title = ""
-            update_local_state(current_index, 0, "", "")
-            consecutive_fast_failures = 0
-        else:
-            if process.returncode == -6:
-                print("⚠️ FFmpeg SIGABRT ile çöktü.")
-            elif process.returncode == -9:
-                print("⚠️ FFmpeg watchdog tarafından donma nedeniyle sonlandırıldı.")
-            print(f"⚠️ Yayın koptu (Return Code: {process.returncode}). Aynı saniyeden tekrar denenecek.")
-            if stderr_tail:
-                print("🧾 FFmpeg son log satırları:")
-                for tail_line in stderr_tail:
-                    print(f"   {tail_line}")
-            if not publisher.alive():
-                print("🧾 RTMP yayıncısı kapanmış, son log satırları:")
-                for tail_line in publisher.tail:
-                    print(f"   {tail_line}")
-            write_step_summary(film_title, current_index, len(playlist), current_stream_seconds, status="🔴 Bağlantı koptu, tekrar denenecek")
+                        if now - last_dashboard_time > 30:
+                            print_dashboard(film_title, current_index, len(playlist), current_stream_seconds)
+                            write_step_summary(film_title, current_index, len(playlist), current_stream_seconds)
+                            last_dashboard_time = now
 
-            duration_this_attempt = current_stream_seconds - last_seconds
-            if duration_this_attempt < FAST_FAIL_THRESHOLD_SECONDS:
-                consecutive_fast_failures += 1
-            else:
-                consecutive_fast_failures = 0
+            process.wait()
+            pump_thread.join(timeout=15)
 
-            if consecutive_fast_failures >= 3:
-                print(f"❌ {film_title} akışı sürekli hataya düştü. Sonraki içeriğe geçiliyor...")
+            # Çıkış (RTMP) tarafı bozuldu mu? (süreç öldü, pipe koptu ya da yazma takıldı)
+            output_broken = output.failed.is_set() or not output.alive() or pump_thread.is_alive()
+
+            if output_broken:
+                print("🔴 Kalıcı RTMP çıkışı koptu. Çıkış süreci yeniden başlatılacak, film aynı saniyeden devam edecek.")
+                if output.stderr_tail:
+                    print("🧾 Çıkış FFmpeg son log satırları:")
+                    for tail_line in output.stderr_tail:
+                        print(f"   {tail_line}")
+                output.stop(force=True)  # bir sonraki turda temiz başlatılır
+                write_step_summary(film_title, current_index, len(playlist), current_stream_seconds, status="🔴 RTMP koptu, yeniden bağlanılıyor")
+                # Bu bir film hatası değil, hızlı-hata sayacına eklenmez
+                last_seconds = current_stream_seconds
+                last_url = target_stream_url
+                update_local_state(current_index, last_seconds, last_url, film_title)
+                retry_delay = 5
+
+            elif process.returncode == 0:
+                print("✅ İçerik bitti, sıradakine geçiliyor (RTMP açık kalıyor).")
+                write_step_summary(film_title, current_index, len(playlist), current_stream_seconds, status="✅ Bitti, sıradakine geçiliyor")
                 current_index += 1
                 last_seconds = 0
                 last_url = ""
                 last_title = ""
-                consecutive_fast_failures = 0
                 update_local_state(current_index, 0, "", "")
+                consecutive_fast_failures = 0
+                retry_delay = 0  # bekleme yok: geçiş en hızlı şekilde olsun
+
             else:
-                last_seconds = current_stream_seconds
-                last_url = target_stream_url
-                update_local_state(current_index, last_seconds, last_url, film_title)
+                if process.returncode == -6:
+                    print("⚠️ FFmpeg SIGABRT ile çöktü.")
+                elif process.returncode == -9:
+                    print("⚠️ Okuyucu FFmpeg watchdog tarafından donma nedeniyle sonlandırıldı.")
+                print(f"⚠️ Okuyucu koptu (Return Code: {process.returncode}). Aynı saniyeden tekrar denenecek. (RTMP açık kalıyor)")
+                if stderr_tail:
+                    print("🧾 FFmpeg son log satırları:")
+                    for tail_line in stderr_tail:
+                        print(f"   {tail_line}")
+                write_step_summary(film_title, current_index, len(playlist), current_stream_seconds, status="🔴 Kaynak koptu, tekrar denenecek")
 
-        if consecutive_fast_failures > 0:
-            retry_delay = min(5 * (2 ** consecutive_fast_failures), MAX_RETRY_DELAY_SECONDS)
-        elif process.returncode == 0:
-            # Normal film geçişi: bekleme yok, yayıncıya hemen yeni film verilsin
-            retry_delay = 0
-        else:
-            retry_delay = 5
+                duration_this_attempt = current_stream_seconds - last_seconds
+                if duration_this_attempt < FAST_FAIL_THRESHOLD_SECONDS:
+                    consecutive_fast_failures += 1
+                else:
+                    consecutive_fast_failures = 0
 
-        if retry_delay > 0:
-            print(f"⚠️ {retry_delay} saniye sonra tekrar bağlanılıyor...")
-            time.sleep(retry_delay)
+                if consecutive_fast_failures >= 3:
+                    print(f"❌ {film_title} akışı sürekli hataya düştü. Sonraki içeriğe geçiliyor...")
+                    current_index += 1
+                    last_seconds = 0
+                    last_url = ""
+                    last_title = ""
+                    consecutive_fast_failures = 0
+                    update_local_state(current_index, 0, "", "")
+                else:
+                    last_seconds = current_stream_seconds
+                    last_url = target_stream_url
+                    update_local_state(current_index, last_seconds, last_url, film_title)
 
+                if consecutive_fast_failures > 0:
+                    retry_delay = min(5 * (2 ** consecutive_fast_failures), MAX_RETRY_DELAY_SECONDS)
+                else:
+                    retry_delay = 5
 
-if __name__ == "__main__":
-    try:
-        start_m3u_stream()
+            if retry_delay > 0:
+                print(f"⚠️ {retry_delay} saniye sonra tekrar bağlanılıyor...")
+                time.sleep(retry_delay)
+
     except KeyboardInterrupt:
         print("\n🛑 Durduruluyor...")
     finally:
-        publisher.stop()
+        output.stop()
+
+
+if __name__ == "__main__":
+    start_m3u_stream()
