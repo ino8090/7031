@@ -14,7 +14,7 @@ MİMARİ (RTMP kalıcı):
 "BİTTİ" KARARI:
   Return code 0 tek başına yeterli değildir. Kaynak erken EOF verirse FFmpeg yine 0 döner.
   Bu yüzden film ancak toplam süreye (END_TOLERANCE_SECONDS payıyla) ulaşıldıysa bitmiş sayılır.
-  Aksi halde "kaynak koptu" kabul edilir, aynı saniyeden tekrar denenir.
+  Süre okunamadıysa da en az 60 saniye kesintisiz yayın yapılmış olması şartı aranır.
 """
 
 import json
@@ -153,7 +153,7 @@ def format_hms(total_seconds):
 
 
 def get_video_duration_ffprobe(video_url):
-    """FFprobe ile toplam süreyi okur. Okunamazsa 0.0 döner."""
+    """FFprobe ile toplam süreyi okur. Geçici ağ hatalarına karşı 3 kere dener."""
     cmd = [
         'ffprobe', '-v', 'error',
         '-allowed_extensions', 'ALL',
@@ -164,19 +164,22 @@ def get_video_duration_ffprobe(video_url):
         '-headers', f"User-Agent: {STREAM_USER_AGENT}\r\nReferer: {STREAM_REFERER}\r\n",
         video_url,
     ]
-    try:
-        output = subprocess.check_output(cmd, stderr=subprocess.DEVNULL, timeout=15).decode('utf-8', 'replace')
-        for out_line in reversed(output.strip().splitlines()):
-            try:
-                duration = float(out_line.strip())
-            except ValueError:
-                continue
-            if duration > 0:
-                print(f"⏱️ ffprobe ile toplam süre: {duration:.1f} sn ({format_hms(duration)})")
-                return duration
-            break
-    except Exception as e:
-        print(f"⚠️ ffprobe ile süre okunamadı (canlı yayın veya kısıtlı medya olabilir): {e}")
+    for attempt in range(1, 4):
+        try:
+            output = subprocess.check_output(cmd, stderr=subprocess.DEVNULL, timeout=15).decode('utf-8', 'replace')
+            for out_line in reversed(output.strip().splitlines()):
+                try:
+                    duration = float(out_line.strip())
+                    if duration > 0:
+                        print(f"⏱️ ffprobe ile toplam süre: {duration:.1f} sn ({format_hms(duration)})")
+                        return duration
+                except ValueError:
+                    continue
+        except Exception as e:
+            if attempt < 3:
+                time.sleep(2)
+            else:
+                print(f"⚠️ ffprobe ile süre okunamadı (canlı yayın veya kısıtlı medya olabilir): {e}")
     return 0.0
 
 
@@ -352,7 +355,6 @@ def make_input_options(url):
         '-reconnect', '1',
     ]
     if is_hls:
-        # HLS'te reconnect_at_eof segment sonlarında gecikme yaratır, kapalı tutulur.
         opts += ['-allowed_extensions', 'ALL',
                  '-reconnect_streamed', '1',
                  '-reconnect_delay_max', '3']
@@ -504,11 +506,19 @@ def is_really_finished(result, base_seconds, total_duration_sec):
     """Film GERÇEKTEN bitti mi? Return code 0 tek başına yetmez."""
     if result.returncode != 0:
         return False
-    if result.stream_seconds - base_seconds <= 0:
-        return False  # hiç ilerleme yok: kaynak boş döndü
-    if total_duration_sec <= 0:
-        return True  # toplam süre bilinmiyor: 0 + ilerleme varsa bitmiş kabul et
-    return result.stream_seconds >= total_duration_sec - END_TOLERANCE_SECONDS
+    
+    played_seconds = result.stream_seconds - base_seconds
+    
+    # 10 saniyeden az oynatıldıysa kesinlikle kaynak erken koptu/seek hatası oluştu demektir.
+    if played_seconds < 10:
+        return False
+
+    # Toplam süre biliniyorsa tolerans kontrolü yap.
+    if total_duration_sec > 0:
+        return result.stream_seconds >= total_duration_sec - END_TOLERANCE_SECONDS
+    
+    # Toplam süre bilinmiyorsa: Gerçekten bitti diyebilmek için en az 60 saniye kesintisiz yayın yapılmış olması gerekir.
+    return played_seconds > 60
 
 
 # ===================== ANA DÖNGÜ =====================
@@ -566,7 +576,7 @@ def start_m3u_stream():
             print("📺 Maxanimasyon Canlı Aktarım Yayını (1080p 25fps - 2500k) Başlatılıyor")
             print(f"🎬 Oynatılan İçerik  : {film_title}")
             print(f"⏱️ Başlangıç Saniyesi: {last_seconds}")
-            print(f"⏱️ Toplam Süre      : {format_hms(total_duration_sec) if total_duration_sec > 0 else 'Bilinmiyor'}")
+            print(f"⏱️️ Toplam Süre      : {format_hms(total_duration_sec) if total_duration_sec > 0 else 'Bilinmiyor'}")
             print(f"🚀 Hedef RTMP       : {RTMP_SERVER}")
 
             print_dashboard(film_title, current_index, playlist_len, last_seconds, status="🟡 Başlatılıyor")
@@ -614,7 +624,7 @@ def start_m3u_stream():
                     print(f"⚠️ Okuyucu erken sonlandı (return code 0 ama film bitmedi): "
                           f"{format_hms(result.stream_seconds)} / {total_txt}")
                 elif result.returncode == -6:
-                    print("⚠️ FFmpeg SIGABRT ile çöktü.")
+                    print("⚠️️ FFmpeg SIGABRT ile çöktü.")
                 elif result.returncode == -9:
                     print("⚠️ Okuyucu FFmpeg watchdog tarafından donma nedeniyle sonlandırıldı.")
                 print(f"⚠️ Okuyucu koptu (Return Code: {result.returncode}). Aynı saniyeden tekrar denenecek. (RTMP açık kalıyor)")
