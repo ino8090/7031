@@ -152,34 +152,79 @@ def format_hms(total_seconds):
     return f"{total_seconds // 3600:02d}:{(total_seconds % 3600) // 60:02d}:{total_seconds % 60:02d}"
 
 
-def get_video_duration_ffprobe(video_url):
-    """FFprobe ile toplam süreyi okur. Geçici ağ hatalarına karşı 3 kere dener."""
-    cmd = [
-        'ffprobe', '-v', 'error',
+def get_video_duration_ffprobe(video_url, retries=3, timeout=15):
+    """
+    PROFESYONEL FFPROBE SÜRE TESPİT MEKANİZMASI:
+    - User-Agent & Referer eklenerek sunucu engellemeleri aşılır.
+    - Ağ zaman aşımı (-rw_timeout) eklenerek kilitlenmeler önlenir.
+    - JSON çıktısı analiz edilip hem format hem de stream seviyesinden süre çekilir.
+    """
+    ffprobe_cmd = [
+        'ffprobe',
+        '-v', 'quiet',
+        '-print_format', 'json',
+        '-show_format',
+        '-show_streams',
         '-allowed_extensions', 'ALL',
-        '-analyzeduration', '20000000',
-        '-probesize', '20000000',
-        '-show_entries', 'format=duration',
-        '-of', 'default=noprint_wrappers=1:nokey=1',
-        '-headers', f"User-Agent: {STREAM_USER_AGENT}\r\nReferer: {STREAM_REFERER}\r\n",
-        video_url,
+        '-headers', f"User-Agent: {STREAM_USER_AGENT}\r\nReferer: {STREAM_REFERER}\r\nOrigin: {STREAM_ORIGIN}\r\n",
+        '-rw_timeout', str(timeout * 1000000),  # Mikrosaniye (15 sn)
+        '-analyzeduration', '10000000',         # Deep analysis (10s)
+        '-probesize', '10000000',               # Deep analysis (10MB)
+        video_url
     ]
-    for attempt in range(1, 4):
+
+    for attempt in range(1, retries + 1):
         try:
-            output = subprocess.check_output(cmd, stderr=subprocess.DEVNULL, timeout=15).decode('utf-8', 'replace')
-            for out_line in reversed(output.strip().splitlines()):
+            print(f"⏱️ ffprobe analizi başlatılıyor (Deneme {attempt}/{retries})...")
+            
+            result = subprocess.run(
+                ffprobe_cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=timeout + 5
+            )
+
+            if result.returncode != 0:
+                if attempt < retries:
+                    time.sleep(2)
+                continue
+
+            data = json.loads(result.stdout)
+
+            # 1. YÖNTEM: Format alanından süre alma
+            if 'format' in data and 'duration' in data['format']:
                 try:
-                    duration = float(out_line.strip())
+                    duration = float(data['format']['duration'])
                     if duration > 0:
-                        print(f"⏱️ ffprobe ile toplam süre: {duration:.1f} sn ({format_hms(duration)})")
+                        print(f"✅ ffprobe ile süre okundu (Format): {duration:.1f} sn ({format_hms(duration)})")
                         return duration
-                except ValueError:
-                    continue
+                except (ValueError, TypeError):
+                    pass
+
+            # 2. YÖNTEM: Stream (Video/Audio) alanından süre alma
+            if 'streams' in data and isinstance(data['streams'], list):
+                for stream in data['streams']:
+                    if 'duration' in stream:
+                        try:
+                            duration = float(stream['duration'])
+                            if duration > 0:
+                                print(f"✅ ffprobe ile süre okundu (Stream): {duration:.1f} sn ({format_hms(duration)})")
+                                return duration
+                        except (ValueError, TypeError):
+                            continue
+
+        except subprocess.TimeoutExpired:
+            print(f"⚠️ ffprobe zaman aşımına uğradı (Deneme {attempt}/{retries}).")
+        except json.JSONDecodeError:
+            print(f"⚠️ ffprobe çıktısı çözümlenemedi (Deneme {attempt}/{retries}).")
         except Exception as e:
-            if attempt < 3:
-                time.sleep(2)
-            else:
-                print(f"⚠️ ffprobe ile süre okunamadı (canlı yayın veya kısıtlı medya olabilir): {e}")
+            print(f"⚠️ ffprobe beklenmeyen hata: {e}")
+
+        if attempt < retries:
+            time.sleep(2)
+
+    print("⚠️ ffprobe ile toplam süre okunamadı (Canlı yayın veya korumalı akış olabilir).")
     return 0.0
 
 
@@ -576,7 +621,7 @@ def start_m3u_stream():
             print("📺 Maxanimasyon Canlı Aktarım Yayını (1080p 25fps - 2500k) Başlatılıyor")
             print(f"🎬 Oynatılan İçerik  : {film_title}")
             print(f"⏱️ Başlangıç Saniyesi: {last_seconds}")
-            print(f"⏱️️ Toplam Süre      : {format_hms(total_duration_sec) if total_duration_sec > 0 else 'Bilinmiyor'}")
+            print(f"⏱ Toplam Süre      : {format_hms(total_duration_sec) if total_duration_sec > 0 else 'Bilinmiyor'}")
             print(f"🚀 Hedef RTMP       : {RTMP_SERVER}")
 
             print_dashboard(film_title, current_index, playlist_len, last_seconds, status="🟡 Başlatılıyor")
@@ -624,7 +669,7 @@ def start_m3u_stream():
                     print(f"⚠️ Okuyucu erken sonlandı (return code 0 ama film bitmedi): "
                           f"{format_hms(result.stream_seconds)} / {total_txt}")
                 elif result.returncode == -6:
-                    print("⚠️️ FFmpeg SIGABRT ile çöktü.")
+                    print("⚠ FFmpeg SIGABRT ile çöktü.")
                 elif result.returncode == -9:
                     print("⚠️ Okuyucu FFmpeg watchdog tarafından donma nedeniyle sonlandırıldı.")
                 print(f"⚠️ Okuyucu koptu (Return Code: {result.returncode}). Aynı saniyeden tekrar denenecek. (RTMP açık kalıyor)")
