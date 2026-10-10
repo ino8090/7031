@@ -118,8 +118,8 @@ class RtmpOutput:
         cmd = [
             'ffmpeg', '-hide_banner', '-loglevel', 'warning', '-nostats',
             '-fflags', '+genpts+nobuffer',
-            '-analyzeduration', '20000000',
-            '-probesize', '20000000',
+            '-analyzeduration', '50000000',
+            '-probesize', '50000000',
             '-f', 'mpegts', '-i', 'pipe:0',
             '-map', '0:v:0', '-map', '0:a:0?',
             '-c', 'copy',
