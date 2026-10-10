@@ -15,6 +15,16 @@ MİMARİ (RTMP kalıcı):
   Return code 0 tek başına yeterli değildir. Kaynak erken EOF verirse FFmpeg yine 0 döner.
   Bu yüzden film ancak toplam süreye (END_TOLERANCE_SECONDS payıyla) ulaşıldıysa bitmiş sayılır.
   Süre okunamadıysa da en az 60 saniye kesintisiz yayın yapılmış olması şartı aranır.
+
+M3U SATIR BİÇİMİ:
+  video_url
+  video_url;ses_url
+  video_url;ses_url;altyazi_url      (altyazı = FORCED altyazı: dosyada sadece yabancı dil/ekran yazısı anları vardır)
+  video_url;;altyazi_url             (ses ayrı değilse ortası boş bırakılır)
+
+FORCED ALTYAZI:
+  Altyazı dosyası (.srt / .vtt / .ass) indirilir, film hangi saniyeden başlıyorsa zamanları o kadar kaydırılır
+  ve videoya yakılır (burn-in). Dosyada satır olan anlarda yazı görünür, olmayan anlarda ekran temiz kalır.
 """
 
 import json
@@ -78,6 +88,17 @@ MAX_RETRY_DELAY_SECONDS = 120
 DUAL_FALLBACK_AFTER_FAILURES = int(os.getenv("DUAL_FALLBACK_AFTER_FAILURES", "3"))
 # Ayrı ses akışında zaman kaymalarını düzelten senkron filtresi (1 = açık, 0 = kapalı).
 DUAL_AUDIO_SYNC = os.getenv("DUAL_AUDIO_SYNC", "1") == "1"
+
+# FORCED ALTYAZI ("video;ses;altyazı") AYARLARI
+# Bu kadar art arda hızlı hatadan sonra altyazısız denenir (0 = kapalı).
+SUB_FALLBACK_AFTER_FAILURES = int(os.getenv("SUB_FALLBACK_AFTER_FAILURES", "3"))
+# Altyazı görünümü (libass, 288 satırlık ölçek: 14 ≈ 1080p'de yaklaşık 52 px).
+SUB_FONT_SIZE = os.getenv("SUB_FONT_SIZE", "14")
+SUB_MARGIN_V = os.getenv("SUB_MARGIN_V", "30")
+SUB_FONT_NAME = os.getenv("SUB_FONT_NAME", "DejaVu Sans")
+
+# FFmpeg'de 'subtitles' filtresi (libass) var mı? Başlangıçta kontrol edilir.
+SUBTITLES_SUPPORTED = True
 
 
 # ===================== KALICI RTMP ÇIKIŞ SÜRECİ =====================
@@ -452,6 +473,135 @@ def pump_reader_to_output(reader, output):
             break
 
 
+# ===================== FORCED ALTYAZI =====================
+# URL -> [(başlangıç_sn, bitiş_sn, metin), ...]. Tekrar denemelerde dosya yeniden indirilmez.
+_SUB_CACHE = {}
+
+_TS = r'(?:(\d+):)?(\d{1,2}):(\d{2})[.,](\d{1,3})'
+_CUE_RE = re.compile(_TS + r'\s*-->\s*' + _TS)
+
+
+def ffmpeg_has_subtitles_filter():
+    """FFmpeg'de 'subtitles' filtresi (libass) var mı?"""
+    try:
+        out = subprocess.run(
+            ['ffmpeg', '-hide_banner', '-filters'],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=15
+        ).stdout
+        return bool(re.search(r'\bsubtitles\b', out))
+    except Exception:
+        return False
+
+
+def _ts_to_sec(h, m, s, ms):
+    return int(h or 0) * 3600 + int(m) * 60 + int(s) + int(ms.ljust(3, '0')) / 1000.0
+
+
+def format_srt_time(seconds):
+    ms_total = int(round(max(0.0, seconds) * 1000))
+    h, rem = divmod(ms_total, 3600000)
+    m, rem = divmod(rem, 60000)
+    s, ms = divmod(rem, 1000)
+    return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
+
+
+def parse_subtitle_text(text):
+    """SRT ve VTT metnini [(başlangıç, bitiş, metin)] listesine çevirir."""
+    cues = []
+    text = text.replace('\r\n', '\n').replace('\r', '\n')
+    for block in re.split(r'\n\s*\n', text):
+        lines = block.strip('\n').split('\n')
+        for i, line in enumerate(lines):
+            m = _CUE_RE.search(line)
+            if not m:
+                continue
+            g = m.groups()
+            start = _ts_to_sec(*g[0:4])
+            end = _ts_to_sec(*g[4:8])
+            body = '\n'.join(lines[i + 1:]).strip()
+            # VTT etiketlerini temizle (<i>, <b>, <u> kalır).
+            body = re.sub(r'<(?!/?(?:i|b|u)\b)[^>]+>', '', body)
+            if body and end > start:
+                cues.append((start, end, body))
+            break
+    return cues
+
+
+def _convert_with_ffmpeg(raw_bytes, sub_url):
+    """.ass/.ssa gibi biçimleri FFmpeg ile SRT'ye çevirip ayrıştırır."""
+    ext = os.path.splitext(sub_url.split('?')[0])[1] or '.sub'
+    raw_path = 'sub_raw' + ext
+    conv_path = 'sub_conv.srt'
+    try:
+        with open(raw_path, 'wb') as f:
+            f.write(raw_bytes)
+        subprocess.run(
+            ['ffmpeg', '-y', '-v', 'error', '-i', raw_path, '-f', 'srt', conv_path],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30
+        )
+        if os.path.exists(conv_path):
+            with open(conv_path, 'r', encoding='utf-8', errors='replace') as f:
+                return parse_subtitle_text(f.read())
+    except Exception as e:
+        print(f"⚠️ Altyazı dönüştürme hatası: {e}")
+    return []
+
+
+def load_subtitle_cues(sub_url):
+    """Altyazıyı indirir ve çözümler. Başarısızsa boş liste döner (yayın altyazısız devam eder)."""
+    if sub_url in _SUB_CACHE:
+        return _SUB_CACHE[sub_url]
+    cues = []
+    try:
+        headers = {'User-Agent': STREAM_USER_AGENT, 'Referer': STREAM_REFERER, 'Origin': STREAM_ORIGIN}
+        response = requests.get(sub_url, headers=headers, timeout=20)
+        if response.status_code == 200 and response.content:
+            raw = response.content
+            text = None
+            for enc in ('utf-8-sig', 'cp1254', 'latin-1'):
+                try:
+                    text = raw.decode(enc)
+                    break
+                except UnicodeDecodeError:
+                    continue
+            cues = parse_subtitle_text(text or "")
+            if not cues:
+                cues = _convert_with_ffmpeg(raw, sub_url)
+            if cues:
+                _SUB_CACHE[sub_url] = cues
+                print(f"✅ Forced altyazı yüklendi: {len(cues)} satır.")
+            else:
+                print("⚠️ Altyazı dosyasında okunabilir satır bulunamadı, altyazısız devam ediliyor.")
+        else:
+            print(f"⚠️ Altyazı indirilemedi (HTTP {response.status_code}), altyazısız devam ediliyor.")
+    except Exception as e:
+        print(f"⚠️ Altyazı indirme hatası: {e}")
+    return cues
+
+
+def prepare_subtitle(sub_url, seek_seconds):
+    """
+    Altyazı zamanlarını seek kadar geri kaydırıp 'sub.srt' olarak yazar.
+    (-ss girişte kullanıldığından video zamanı 0'dan başlar; altyazı da buna göre kaydırılır.)
+    Kullanılacak altyazı yoksa None döner.
+    """
+    cues = load_subtitle_cues(sub_url)
+    if not cues:
+        return None
+    shift = float(seek_seconds)
+    out = []
+    n = 0
+    for start, end, body in cues:
+        if end - shift <= 0:
+            continue
+        n += 1
+        out.append(f"{n}\n{format_srt_time(start - shift)} --> {format_srt_time(end - shift)}\n{body}\n")
+    if not out:
+        return None
+    write_text_file('sub.srt', "\n".join(out))
+    return 'sub.srt'
+
+
 # ===================== OKUYUCU KOMUTU =====================
 HEADERS_ARG = (
     f"User-Agent: {STREAM_USER_AGENT}\r\n"
@@ -461,14 +611,18 @@ HEADERS_ARG = (
 
 
 def split_dual_url(target_url):
-    """'video;ses' biçimini ayrıştırır. (video_url, audio_url) döner; tek URL ise audio_url boştur."""
-    video_url, _, audio_url = target_url.partition(";")
-    return video_url.strip(), audio_url.strip()
+    """
+    'video;ses;altyazı' biçimini ayrıştırır. (video_url, audio_url, sub_url) döner.
+    Eksik parçalar boş string olur. Örnek: 'video;;altyazı' => ses boş, altyazı dolu.
+    """
+    parts = [p.strip() for p in target_url.split(";")]
+    parts += [""] * (3 - len(parts))
+    return parts[0], parts[1], parts[2]
 
 
 def get_total_duration(target_url):
     """Toplam süre: önce video URL'sinden, okunamazsa (çift URL ise) ses URL'sinden denenir."""
-    video_url, audio_url = split_dual_url(target_url)
+    video_url, audio_url, _ = split_dual_url(target_url)
     duration = get_video_duration_ffprobe(video_url)
     if duration > 0 or not audio_url:
         return duration
@@ -502,10 +656,10 @@ def make_input_options(url):
     return opts
 
 
-def build_reader_command(target_url, seek_seconds, video_only=False):
+def build_reader_command(target_url, seek_seconds, video_only=False, use_sub=True):
     seek_args = ['-ss', str(int(seek_seconds))] if seek_seconds > 0 else []
 
-    video_url, audio_url = split_dual_url(target_url)
+    video_url, audio_url, sub_url = split_dual_url(target_url)
     audio_filter = []
 
     if audio_url and not video_only:
@@ -527,10 +681,27 @@ def build_reader_command(target_url, seek_seconds, video_only=False):
         f"drawtext=textfile='title.txt':reload=1:fontfile='{BOLD_FONT_PATH}':"
         f"fontcolor=white@{TEXT_OPACITY}:fontsize=25:x=51:y=h-th-51"
     )
-    base_scale = (
-        '[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,'
-        'pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,fps=25[main];'
-    )
+
+    # Forced altyazı: ölçekleme/pad'den sonra, logo ve başlıktan önce videoya yakılır.
+    sub_path = None
+    if sub_url and use_sub and SUBTITLES_SUPPORTED:
+        sub_path = prepare_subtitle(sub_url, seek_seconds)
+
+    if sub_path:
+        sub_style = (
+            f"Fontname={SUB_FONT_NAME},Fontsize={SUB_FONT_SIZE},Bold=1,"
+            f"Outline=2,Shadow=0,Alignment=2,MarginV={SUB_MARGIN_V}"
+        )
+        base_scale = (
+            '[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,'
+            'pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,fps=25[pre];'
+            f"[pre]subtitles=filename='{sub_path}':charset=UTF-8:force_style='{sub_style}'[main];"
+        )
+    else:
+        base_scale = (
+            '[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,'
+            'pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,fps=25[main];'
+        )
 
     has_logo = os.path.exists('logo.png') and os.path.getsize('logo.png') > 0
     if has_logo:
@@ -658,11 +829,19 @@ def is_really_finished(result, base_seconds, total_duration_sec):
 
 # ===================== ANA DÖNGÜ =====================
 def start_m3u_stream():
+    global SUBTITLES_SUPPORTED
+
     print(f"🔧 Kullanılan M3U   : {M3U_URL}")
     print(f"🔧 Kullanılan Logo  : {LOGO_URL}")
     print(f"🔧 State dosyası    : {STATE_FILE_NAME}")
     print(f"🔧 RTMP hedefi      : {RTMP_SERVER}")
     print(f"🔧 Decoder thread   : {DECODER_THREADS}")
+
+    SUBTITLES_SUPPORTED = ffmpeg_has_subtitles_filter()
+    if SUBTITLES_SUPPORTED:
+        print("🔧 Altyazı filtresi : ✅ FFmpeg 'subtitles' (libass) mevcut")
+    else:
+        print("⚠️ FFmpeg'de 'subtitles' filtresi (libass) yok, forced altyazılar devre dışı.")
 
     download_logo()
     current_index, last_seconds, last_url, last_title = get_local_state()
@@ -719,7 +898,7 @@ def start_m3u_stream():
             if not output.alive():
                 output.start()
 
-            _, dual_audio_url = split_dual_url(target_url)
+            _, dual_audio_url, sub_url = split_dual_url(target_url)
             video_only = bool(
                 dual_audio_url
                 and DUAL_FALLBACK_AFTER_FAILURES > 0
@@ -728,7 +907,18 @@ def start_m3u_stream():
             if video_only:
                 print(f"🔁 Çift URL art arda {consecutive_failures} kez hata verdi, bu denemede sadece video URL'si kullanılacak.")
 
-            command = build_reader_command(target_url, last_seconds, video_only=video_only)
+            use_sub = not (
+                sub_url
+                and SUB_FALLBACK_AFTER_FAILURES > 0
+                and consecutive_failures >= SUB_FALLBACK_AFTER_FAILURES
+            )
+            if sub_url:
+                if not use_sub:
+                    print(f"🔁 Art arda {consecutive_failures} hata: bu denemede forced altyazı kapalı.")
+                else:
+                    print("💬 Forced altyazı  : Var")
+
+            command = build_reader_command(target_url, last_seconds, video_only=video_only, use_sub=use_sub)
             print("▶ Okuyucu FFmpeg başlatıldı, kalıcı RTMP'ye aktarılıyor...")
 
             ctx = {"index": current_index, "url": target_url, "title": film_title, "playlist_len": playlist_len}
