@@ -118,8 +118,8 @@ class RtmpOutput:
         cmd = [
             'ffmpeg', '-hide_banner', '-loglevel', 'warning', '-nostats',
             '-fflags', '+genpts+nobuffer',
-            '-analyzeduration', '3000000',
-            '-probesize', '3000000',
+            '-analyzeduration', '10000000',
+            '-probesize', '10000000',
             '-f', 'mpegts', '-i', 'pipe:0',
             '-map', '0:v:0', '-map', '0:a:0?',
             '-c', 'copy',
@@ -938,6 +938,9 @@ def start_m3u_stream():
                     print("🧾 Çıkış FFmpeg son log satırları:")
                     for l in output.stderr_tail:
                         print(f"   {l}")
+                print(f"🧾 Okuyucu FFmpeg durumu (Return Code: {result.returncode}), son log satırları:")
+                for l in result.stderr_tail:
+                    print(f"   {l}")
                 output.stop(force=True)
                 write_step_summary(film_title, current_index, playlist_len, result.stream_seconds,
                                    status="🔴 RTMP koptu, yeniden bağlanılıyor")
