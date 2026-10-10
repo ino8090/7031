@@ -118,13 +118,11 @@ class RtmpOutput:
         cmd = [
             'ffmpeg', '-hide_banner', '-loglevel', 'warning', '-nostats',
             '-fflags', '+genpts+nobuffer',
-            '-analyzeduration', '10000000',
-            '-probesize', '10000000',
+            '-analyzeduration', '20000000',
+            '-probesize', '20000000',
             '-f', 'mpegts', '-i', 'pipe:0',
             '-map', '0:v:0', '-map', '0:a:0?',
             '-c', 'copy',
-            '-analyzeduration', '10000000',
-            '-probesize', '10000000',
             '-flvflags', 'no_duration_filesize',
             '-f', 'flv', self.rtmp_url,
         ]
