@@ -695,7 +695,7 @@ def build_reader_command(target_url, seek_seconds, video_only=False, use_sub=Tru
         base_scale = (
             '[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,'
             'pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,fps=25[pre];'
-            f"[pre]subtitles=filename='{sub_path}':charset=UTF-8:force_style='{sub_style}'[main];"
+            f"[pre]subtitles=filename='{sub_path}':force_style='{sub_style}'[main];"
         )
     else:
         base_scale = (
