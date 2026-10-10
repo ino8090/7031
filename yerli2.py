@@ -755,6 +755,7 @@ def run_reader(command, output, base_seconds, total_duration_sec, ctx):
     last_save_time = now
     last_dashboard_time = now
     current_seconds = base_seconds
+    last_speed = 0.0
     stderr_tail = deque(maxlen=40)
     progress = [now, False]  # [son ilerleme zamanı, ilk ilerleme geldi mi]
 
@@ -784,6 +785,10 @@ def run_reader(command, output, base_seconds, total_duration_sec, ctx):
         played = int(hrs) * 3600 + int(mins) * 60 + float(secs)
         current_seconds = base_seconds + played
 
+        sm = re.search(r'speed=\s*([\d.]+)x', line)
+        if sm:
+            last_speed = float(sm.group(1))
+
         if total_duration_sec > 0:
             write_text_file('time.txt', format_hms(max(0, total_duration_sec - current_seconds)))
         else:
@@ -797,6 +802,7 @@ def run_reader(command, output, base_seconds, total_duration_sec, ctx):
             update_local_state(ctx["index"], current_seconds, ctx["url"], ctx["title"])
             last_save_time = now
         if now - last_dashboard_time > 30:
+            print(f"⚡ FFmpeg hızı: {last_speed:.2f}x (1.00x altı = gerçek zamandan yavaş)")
             print_dashboard(ctx["title"], ctx["index"], ctx["playlist_len"], current_seconds)
             write_step_summary(ctx["title"], ctx["index"], ctx["playlist_len"], current_seconds)
             last_dashboard_time = now
