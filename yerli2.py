@@ -67,6 +67,8 @@ DECODER_THREADS = os.getenv("DECODER_THREADS", "1")
 WATCHDOG_TIMEOUT_SECONDS = int(os.getenv("WATCHDOG_TIMEOUT_SECONDS", "45"))
 # İlk kare gelene kadar tanınan süre (HLS kaynaklar geç açılabilir).
 WATCHDOG_STARTUP_SECONDS = int(os.getenv("WATCHDOG_STARTUP_SECONDS", "120"))
+# Ses/ilerleme gelip de bu kadar sn boyunca HİÇ video karesi (frame=0) çıkmazsa okuyucu kaynak hatası sayılıp sonlandırılır.
+VIDEO_FRAME_TIMEOUT_SECONDS = int(os.getenv("VIDEO_FRAME_TIMEOUT_SECONDS", "30"))
 
 # Link değişip aynı film olduğunda geriden devam edilecek süre.
 LINK_CHANGE_REWIND_SECONDS = int(os.getenv("LINK_CHANGE_REWIND_SECONDS", "15"))
@@ -118,8 +120,8 @@ class RtmpOutput:
         cmd = [
             'ffmpeg', '-hide_banner', '-loglevel', 'warning', '-nostats',
             '-fflags', '+genpts+nobuffer',
-            '-analyzeduration', '50000000',
-            '-probesize', '50000000',
+            '-analyzeduration', '20000000',
+            '-probesize', '20000000',
             '-f', 'mpegts', '-i', 'pipe:0',
             '-map', '0:v:0', '-map', '0:a:0?',
             '-c', 'copy',
@@ -741,6 +743,8 @@ class ReaderResult:
     stream_seconds: float
     stderr_tail: deque = field(default_factory=lambda: deque(maxlen=40))
     output_broken: bool = False
+    other_tail: deque = field(default_factory=lambda: deque(maxlen=40))  # time= olmayan (hata/uyarı) satırlar
+    frames: int = 0  # okuyucunun ürettiği video karesi sayısı (0 = hiç video çıkmadı)
 
 
 def run_reader(command, output, base_seconds, total_duration_sec, ctx):
@@ -757,7 +761,10 @@ def run_reader(command, output, base_seconds, total_duration_sec, ctx):
     current_seconds = base_seconds
     last_speed = 0.0
     stderr_tail = deque(maxlen=40)
+    other_lines = deque(maxlen=40)  # ilerleme (time=) dışındaki satırlar
     progress = [now, False]  # [son ilerleme zamanı, ilk ilerleme geldi mi]
+    frames = [0]             # son görülen frame= değeri
+    first_progress = [None]  # ilk time= satırının zamanı
 
     def watchdog():
         while process.poll() is None:
@@ -770,12 +777,22 @@ def run_reader(command, output, base_seconds, total_duration_sec, ctx):
                 except Exception as e:
                     print(f"⚠️ Watchdog sonlandırma hatası: {e}")
                 break
+            if (first_progress[0] is not None and frames[0] == 0
+                    and time.time() - first_progress[0] > VIDEO_FRAME_TIMEOUT_SECONDS):
+                print(f"🚨 Watchdog: {VIDEO_FRAME_TIMEOUT_SECONDS} saniyedir ses geliyor ama HİÇ video karesi yok "
+                      f"(seek sonrası video çözülemiyor). Okuyucu sonlandırılıyor.")
+                try:
+                    process.kill()
+                except Exception as e:
+                    print(f"⚠️ Watchdog sonlandırma hatası: {e}")
+                break
 
     threading.Thread(target=watchdog, daemon=True).start()
 
     for line in iter_stderr_lines(process.stderr):
         stderr_tail.append(line.rstrip())
         if "time=" not in line:
+            other_lines.append(line.rstrip())
             continue
         m = re.search(r'time=(\d+):(\d+):(\d+\.\d+)', line)
         if not m:
@@ -788,6 +805,11 @@ def run_reader(command, output, base_seconds, total_duration_sec, ctx):
         sm = re.search(r'speed=\s*([\d.]+)x', line)
         if sm:
             last_speed = float(sm.group(1))
+        fm = re.search(r'frame=\s*(\d+)', line)
+        if fm:
+            frames[0] = int(fm.group(1))
+        if first_progress[0] is None:
+            first_progress[0] = time.time()
 
         if total_duration_sec > 0:
             write_text_file('time.txt', format_hms(max(0, total_duration_sec - current_seconds)))
@@ -802,7 +824,7 @@ def run_reader(command, output, base_seconds, total_duration_sec, ctx):
             update_local_state(ctx["index"], current_seconds, ctx["url"], ctx["title"])
             last_save_time = now
         if now - last_dashboard_time > 30:
-            print(f"⚡ FFmpeg hızı: {last_speed:.2f}x (1.00x altı = gerçek zamandan yavaş)")
+            print(f"⚡ FFmpeg hızı: {last_speed:.2f}x (1.00x altı = gerçek zamandan yavaş) | video karesi: {frames[0]}")
             print_dashboard(ctx["title"], ctx["index"], ctx["playlist_len"], current_seconds)
             write_step_summary(ctx["title"], ctx["index"], ctx["playlist_len"], current_seconds)
             last_dashboard_time = now
@@ -811,7 +833,7 @@ def run_reader(command, output, base_seconds, total_duration_sec, ctx):
     pump_thread.join(timeout=15)
 
     output_broken = output.failed.is_set() or not output.alive() or pump_thread.is_alive()
-    return ReaderResult(process.returncode, current_seconds, stderr_tail, output_broken)
+    return ReaderResult(process.returncode, current_seconds, stderr_tail, output_broken, other_lines, frames[0])
 
 
 def is_really_finished(result, base_seconds, total_duration_sec):
@@ -930,17 +952,21 @@ def start_m3u_stream():
             ctx = {"index": current_index, "url": target_url, "title": film_title, "playlist_len": playlist_len}
             result = run_reader(command, output, last_seconds, total_duration_sec, ctx)
             played = result.stream_seconds - last_seconds
+            # Ses/zaman ilerledi ama hiç video karesi çıkmadıysa: bu RTMP değil, kaynak/seek sorunudur.
+            no_video = (result.frames == 0 and played >= 5)
 
             # ---------- 1) RTMP çıkışı koptu ----------
-            if result.output_broken:
+            if result.output_broken and not no_video:
                 print("🔴 Kalıcı RTMP çıkışı koptu. Çıkış süreci yeniden başlatılacak, film aynı saniyeden devam edecek.")
                 if output.stderr_tail:
                     print("🧾 Çıkış FFmpeg son log satırları:")
                     for l in output.stderr_tail:
                         print(f"   {l}")
-                print(f"🧾 Okuyucu FFmpeg durumu (Return Code: {result.returncode}), son log satırları:")
-                for l in result.stderr_tail:
+                print(f"🧾 Okuyucu FFmpeg durumu (Return Code: {result.returncode}), hata/uyarı satırları (ilerleme hariç):")
+                for l in result.other_tail:
                     print(f"   {l}")
+                if result.stderr_tail:
+                    print(f"   (son ilerleme satırı) {result.stderr_tail[-1]}")
                 output.stop(force=True)
                 write_step_summary(film_title, current_index, playlist_len, result.stream_seconds,
                                    status="🔴 RTMP koptu, yeniden bağlanılıyor")
@@ -970,6 +996,10 @@ def start_m3u_stream():
                 elif result.returncode == -9:
                     print("⚠️ Okuyucu FFmpeg watchdog tarafından donma nedeniyle sonlandırıldı.")
                 print(f"⚠️ Okuyucu koptu (Return Code: {result.returncode}). Aynı saniyeden tekrar denenecek. (RTMP açık kalıyor)")
+                if result.other_tail:
+                    print("🧾 FFmpeg hata/uyarı satırları (ilerleme hariç):")
+                    for l in result.other_tail:
+                        print(f"   {l}")
                 if result.stderr_tail:
                     print("🧾 FFmpeg son log satırları:")
                     for l in result.stderr_tail:
@@ -977,7 +1007,12 @@ def start_m3u_stream():
                 write_step_summary(film_title, current_index, playlist_len, result.stream_seconds,
                                    status="🔴 Kaynak koptu, tekrar denenecek")
 
-                if played < FAST_FAIL_THRESHOLD_SECONDS:
+                if no_video:
+                    print("⚠️ Okuyucu hiç video karesi üretemedi (seek sonrası video çözülemedi). "
+                          "Çıkış süreci temiz başlatılacak, konum ilerletilmeyecek.")
+                    output.stop(force=True)
+
+                if played < FAST_FAIL_THRESHOLD_SECONDS or no_video:
                     consecutive_failures += 1
                 else:
                     consecutive_failures = 0
@@ -989,7 +1024,8 @@ def start_m3u_stream():
                     consecutive_failures = 0
                     update_local_state(current_index, 0, "", "")
                 else:
-                    last_seconds = result.stream_seconds
+                    if not no_video:
+                        last_seconds = result.stream_seconds
                     # Art arda hatada seek konumunu geri al (bozuk seek noktasına karşı)
                     if consecutive_failures >= SEEK_BACKOFF_AFTER_FAILURES and last_seconds > 0:
                         old = last_seconds
